@@ -11,9 +11,10 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  TouchableOpacity
+  TouchableOpacity,
 } from "react-native";
 
+import * as Linking from "expo-linking";
 import Colors from "../../constants/Colors";
 
 WebBrowser.maybeCompleteAuthSession();
@@ -75,11 +76,16 @@ export default function SignInScreen() {
     if (isSignedIn) return;
 
     try {
-      const { createdSessionId, setActive } = await startGoogleOAuth();
+      const redirectUrl = Linking.createURL("oauth-native-callback");
+      // -> petadoption://oauth-native-callback (เพราะคุณตั้ง scheme แล้ว)
+
+      const { createdSessionId, setActive } = await startGoogleOAuth({
+        redirectUrl,
+      });
 
       if (createdSessionId) {
         await setActive({ session: createdSessionId });
-        // ✅ AuthWrapper จะ redirect ให้เอง
+        // AuthWrapper จะ redirect ต่อเอง หรือจะ router.replace("/(tabs)/home") ก็ได้
       }
     } catch (err) {
       console.error("Google OAuth error:", err);
