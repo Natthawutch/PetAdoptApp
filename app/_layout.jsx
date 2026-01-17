@@ -4,6 +4,8 @@ import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { ActivityIndicator, View } from "react-native";
 import AuthWrapper from "../components/AuthWrapper"; // ✅ ใช้ AuthWrapper แทน SyncUser
+import RealtimeBridge from "../components/RealtimeBridge";
+
 import SyncPushToken from "../components/SyncPushToken";
 import ClerkWrapper from "../config/clerkProvider";
 
@@ -39,8 +41,8 @@ export default function RootLayout() {
 
   return (
     <ClerkWrapper>
-      {/* ✅ ใช้ AuthWrapper จัดการ auth flow  */}
       <AuthWrapper />
+      <RealtimeBridge />
       <SyncPushToken />
       <StatusBar style="dark" />
       <Stack screenOptions={{ headerShown: false }}>

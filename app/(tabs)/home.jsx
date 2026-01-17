@@ -14,7 +14,7 @@ import {
   View,
 } from "react-native";
 import Header from "../../components/Home/header";
-import Slider from "../../components/Home/slider";
+// import Slider from "../../components/Home/slider";
 import { supabase } from "../../config/supabaseClient";
 
 export default function Home() {
@@ -216,7 +216,7 @@ export default function Home() {
       <FlatList
         ListHeaderComponent={
           <>
-            <Slider />
+            {/* <Slider /> */}
             <View style={styles.filterTitleArea}>
               <Text style={styles.mainTitle}>สัตว์เลี้ยงใกล้คุณ</Text>
               <TouchableOpacity

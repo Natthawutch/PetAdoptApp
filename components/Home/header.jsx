@@ -2,7 +2,7 @@ import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Location from "expo-location";
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -11,10 +11,13 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { supabase } from "../../config/supabaseClient";
+import {
+  createClerkSupabaseClient,
+  getRealtimeClient,
+} from "../../config/supabaseClient";
 
 export default function Header() {
-  const { isSignedIn } = useAuth();
+  const { isSignedIn, getToken } = useAuth();
   const { user: clerkUser, isLoaded } = useUser();
   const router = useRouter();
 
@@ -23,17 +26,28 @@ export default function Header() {
   const [inboxCount, setInboxCount] = useState(0);
   const [locationText, setLocationText] = useState("กำลังตรวจสอบตำแหน่ง...");
 
+  const channelRef = useRef(null);
+
+  /* ========================= HELPER: GET CLERK TOKEN ========================= */
+  const getClerkToken = async () => {
+    const token = await getToken({ template: "supabase", skipCache: true });
+    if (!token) throw new Error("Missing Clerk token");
+    return token;
+  };
+
   /* ========================= LOAD USER (SUPABASE) ========================= */
   useEffect(() => {
     if (!isLoaded || !isSignedIn || !clerkUser) return;
 
     const loadUser = async () => {
       try {
-        // ลองโหลดข้อมูล user จาก Supabase
+        // ✅ ใช้ authenticated client
+        const token = await getClerkToken();
+        const supabase = createClerkSupabaseClient(token);
+
         let retries = 0;
         let data = null;
 
-        // ลองสูงสุด 3 ครั้ง (เผื่อ AuthWrapper ยังสร้าง user ไม่เสร็จ)
         while (!data && retries < 3) {
           const result = await supabase
             .from("users")
@@ -46,12 +60,10 @@ export default function Header() {
             break;
           }
 
-          // รอ 500ms แล้วลองใหม่
           await new Promise((resolve) => setTimeout(resolve, 500));
           retries++;
         }
 
-        // ตั้งค่า user state
         setUser({
           id: clerkUser.id,
           full_name: data?.full_name || clerkUser.fullName || "ผู้ใช้งาน",
@@ -62,7 +74,6 @@ export default function Header() {
         });
       } catch (e) {
         console.log("HEADER LOAD USER ERROR:", e);
-        // ถ้า error ให้ใช้ข้อมูลจาก Clerk แทน
         setUser({
           id: clerkUser.id,
           full_name: clerkUser.fullName || "ผู้ใช้งาน",
@@ -80,20 +91,45 @@ export default function Header() {
   /* ========================= UNREAD INBOX COUNT ========================= */
   const loadInboxCount = async () => {
     if (!user?.id) return;
-    try {
-      const { data, error } = await supabase
-        .from("messages")
-        .select("chat_id")
-        .neq("sender_id", user.id)
-        .is("read_at", null);
 
-      if (error || !data) {
+    try {
+      // ✅ ใช้ authenticated client
+      const token = await getClerkToken();
+      const supabase = createClerkSupabaseClient(token);
+
+      // ✅ นับ unread messages ในแชทที่ user เป็น participant
+      const { data: chats, error: chatsErr } = await supabase
+        .from("chats")
+        .select("id")
+        .or(`user1_id.eq.${user.id},user2_id.eq.${user.id}`);
+
+      if (chatsErr || !chats) {
         setInboxCount(0);
         return;
       }
 
-      const uniqueChats = [...new Set(data.map((m) => m.chat_id))];
-      setInboxCount(uniqueChats.length);
+      const chatIds = chats.map((c) => c.id);
+
+      if (chatIds.length === 0) {
+        setInboxCount(0);
+        return;
+      }
+
+      // นับแชทที่มี unread messages
+      let unreadChats = 0;
+
+      for (const chatId of chatIds) {
+        const { count } = await supabase
+          .from("messages")
+          .select("*", { count: "exact", head: true })
+          .eq("chat_id", chatId)
+          .neq("sender_id", user.id)
+          .eq("is_read", false);
+
+        if (count > 0) unreadChats++;
+      }
+
+      setInboxCount(unreadChats);
     } catch (err) {
       console.error("loadInboxCount error:", err);
       setInboxCount(0);
@@ -108,17 +144,48 @@ export default function Header() {
   useEffect(() => {
     if (!user?.id) return;
 
-    const channel = supabase
-      .channel(`header-inbox-${user.id}`)
-      .on(
-        "postgres_changes",
-        { event: "*", table: "messages", schema: "public" },
-        () => loadInboxCount()
-      )
-      .subscribe();
+    const setupRealtime = async () => {
+      try {
+        // ✅ ใช้ authenticated realtime client
+        const token = await getClerkToken();
+        const rt = getRealtimeClient(token);
+
+        if (channelRef.current) {
+          await channelRef.current.unsubscribe();
+          channelRef.current = null;
+        }
+
+        const channel = rt
+          .channel(`header-inbox-${user.id}`)
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "messages",
+            },
+            () => {
+              console.log("📬 Header: message changed, reloading inbox count");
+              loadInboxCount();
+            }
+          )
+          .subscribe((status) => {
+            console.log("📬 Header realtime status:", status);
+          });
+
+        channelRef.current = channel;
+      } catch (err) {
+        console.error("setupRealtime error:", err);
+      }
+    };
+
+    setupRealtime();
 
     return () => {
-      supabase.removeChannel(channel);
+      if (channelRef.current) {
+        channelRef.current.unsubscribe();
+        channelRef.current = null;
+      }
     };
   }, [user?.id]);
 

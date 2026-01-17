@@ -1,5 +1,5 @@
-// app/(tabs)/notifications.jsx  (or wherever your Notifications screen is)
 import { useAuth, useUser } from "@clerk/clerk-expo";
+import { useFocusEffect } from "@react-navigation/native";
 import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -22,34 +22,36 @@ export default function Notifications() {
   const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // Keep one Supabase client + one realtime channel per user
   const supabaseRef = useRef(null);
   const channelRef = useRef(null);
+  const fetchRef = useRef(null);
 
-  /* =======================
-     Ensure Supabase Client
-     - Creates ONE client per user
-     - IMPORTANT: set realtime auth token
-  ======================= */
   const ensureSupabase = useCallback(async () => {
-    if (!user?.id) return null;
-    if (supabaseRef.current) return supabaseRef.current;
+  if (!user?.id) return null;
 
-    const token = await getToken({ template: "supabase" });
-    if (!token) throw new Error("Missing supabase token from Clerk");
+  const token = await getToken({ template: "supabase" });
+  if (!token) throw new Error("No Clerk token");
+
+  const currentToken = supabaseRef.current?.__clerkToken;
+
+  // 🔥 ถ้า token เปลี่ยน → destroy & recreate
+  if (!supabaseRef.current || currentToken !== token) {
+    console.log("🔄 Recreate Supabase client (new JWT)");
+
+    if (channelRef.current) {
+      await channelRef.current.unsubscribe();
+      channelRef.current = null;
+    }
 
     const supabase = createClerkSupabaseClient(token);
-
-    // ✅ CRITICAL: Realtime must be authorized too
-    await supabase.realtime.setAuth(token);
-
+    supabase.__clerkToken = token;
     supabaseRef.current = supabase;
-    return supabase;
-  }, [user?.id, getToken]);
+  }
 
-  /* =======================
-     Fetch Requests
-  ======================= */
+  return supabaseRef.current;
+}, [user?.id, getToken]);
+
+
   const fetchRequests = useCallback(async () => {
     if (!user?.id) return;
 
@@ -70,104 +72,98 @@ export default function Notifications() {
           )
         `
         )
-        .eq("owner_id", user.id) // owner_id is TEXT (Clerk user id)
+        .eq("owner_id", user.id)
         .order("created_at", { ascending: false });
 
-      if (error) {
-        console.error("❌ Fetch requests error:", error);
-      } else {
-        setRequests(data || []);
-      }
-    } catch (e) {
-      console.error("❌ Fetch requests exception:", e);
+      if (error) console.error("❌ Fetch requests error:", error);
+      else setRequests(data || []);
     } finally {
       setLoading(false);
     }
   }, [user?.id, ensureSupabase]);
 
-  /* =======================
-     Initial Load / User Change
-  ======================= */
+  // keep latest fetch in ref
   useEffect(() => {
-    // Reset client + channel when user changes
-    supabaseRef.current = null;
+    fetchRef.current = fetchRequests;
+  }, [fetchRequests]);
 
-    if (channelRef.current) {
-      channelRef.current = null;
-    }
+  // ✅ โหลดทุกครั้งที่ “เข้าหน้านี้” (focus)
+  useFocusEffect(
+    useCallback(() => {
+      if (!user?.id) return;
 
-    if (user?.id) {
       fetchRequests();
-    } else {
-      setRequests([]);
-      setLoading(false);
-    }
-  }, [user?.id, fetchRequests]);
 
-  /* =======================
-     Realtime Subscription
-  ======================= */
-  useEffect(() => {
-    if (!user?.id) return;
+      return () => {
+        // nothing here (fetch)
+      };
+    }, [user?.id])
+  );
 
-    let cancelled = false;
+  // ✅ Realtime: subscribe ตอน focus / unsubscribe ตอน blur
+  useFocusEffect(
+    useCallback(() => {
+      if (!user?.id) return;
 
-    (async () => {
-      try {
-        const supabase = await ensureSupabase();
-        if (!supabase || cancelled) return;
+      let cancelled = false;
 
-        // Remove existing channel if any
+      (async () => {
+        try {
+          const supabase = await ensureSupabase();
+          if (!supabase || cancelled) return;
+
+          // ถ้ามีของเก่าอยู่ ลบก่อนเสมอ
+          if (channelRef.current) {
+            channelRef.current.unsubscribe();
+            channelRef.current = null;
+          }
+
+          const channel = supabase
+            .channel(`adoption-requests-${user.id}`)
+            .on(
+              "postgres_changes",
+              {
+                event: "*",
+                schema: "public",
+                table: "adoption_requests",
+                filter: `owner_id=eq.${user.id}`,
+              },
+              () => {
+                fetchRef.current?.();
+              }
+            )
+            .subscribe((status) => {
+              console.log("📡 Realtime status:", status);
+
+              // ✅ ถ้า CLOSED ให้เคลียร์ ref เพื่อรอบหน้าสร้างใหม่ได้ชัวร์
+              if (status === "CLOSED") {
+                channelRef.current = null;
+              }
+            });
+
+          channelRef.current = channel;
+        } catch (e) {
+          console.error("❌ Realtime setup exception:", e);
+        }
+      })();
+
+      // blur/unfocus
+      return () => {
+        cancelled = true;
         if (channelRef.current) {
-          supabase.removeChannel(channelRef.current);
+          channelRef.current.unsubscribe();
           channelRef.current = null;
         }
+      };
+    }, [user?.id, ensureSupabase])
+  );
 
-        const channel = supabase
-          .channel(`adoption-requests-${user.id}`)
-          .on(
-            "postgres_changes",
-            {
-              event: "*",
-              schema: "public",
-              table: "adoption_requests",
-              filter: `owner_id=eq.${user.id}`,
-            },
-            (payload) => {
-              console.log("📡 Realtime payload:", payload);
-              fetchRequests();
-            }
-          )
-          .subscribe((status) => {
-            console.log("📡 Realtime status:", status);
-          });
-
-        channelRef.current = channel;
-      } catch (e) {
-        console.error("❌ Realtime setup exception:", e);
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-      const supabase = supabaseRef.current;
-      if (supabase && channelRef.current) {
-        supabase.removeChannel(channelRef.current);
-        channelRef.current = null;
-      }
-    };
-  }, [user?.id, ensureSupabase, fetchRequests]);
-
-  /* =======================
-     Render Item
-  ======================= */
   const renderItem = ({ item }) => {
     const statusText = {
       pending: "รอดำเนินการ",
       approved: "อนุมัติแล้ว",
       rejected: "ปฏิเสธแล้ว",
     };
-
     const statusColor = {
       pending: "#ff9800",
       approved: "#4caf50",
@@ -210,7 +206,6 @@ export default function Notifications() {
 
   return (
     <View style={styles.container}>
-      {/* Header */}
       <LinearGradient
         colors={["#667eea", "#764ba2"]}
         style={[styles.header, { paddingTop: insets.top + 16 }]}
@@ -219,7 +214,6 @@ export default function Notifications() {
         <Text style={styles.headerSub}>แตะเพื่อจัดการคำขอ</Text>
       </LinearGradient>
 
-      {/* List */}
       <FlatList
         data={requests}
         keyExtractor={(item) => String(item.id)}
@@ -237,12 +231,8 @@ export default function Notifications() {
   );
 }
 
-/* =======================
-   Styles
-======================= */
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f5f5f5" },
-
   header: {
     paddingHorizontal: 20,
     paddingBottom: 20,
@@ -251,7 +241,6 @@ const styles = StyleSheet.create({
   },
   headerTitle: { fontSize: 26, fontWeight: "800", color: "#fff" },
   headerSub: { color: "rgba(255,255,255,0.8)", marginTop: 4 },
-
   item: {
     backgroundColor: "#fff",
     borderRadius: 16,
@@ -263,7 +252,6 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
   },
   row: { flexDirection: "row", gap: 12 },
-
   icon: {
     width: 48,
     height: 48,
@@ -271,14 +259,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-
   title: { fontSize: 16, fontWeight: "700" },
   subtitle: { marginTop: 4, fontWeight: "600" },
   time: { fontSize: 12, color: "#999", marginTop: 6 },
-
-  emptyText: {
-    textAlign: "center",
-    marginTop: 40,
-    color: "#999",
-  },
+  emptyText: { textAlign: "center", marginTop: 40, color: "#999" },
 });

@@ -1,10 +1,26 @@
 import { Ionicons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
 import { StyleSheet, Text, View } from "react-native";
-// ลองเช็คดูว่าโฟลเดอร์ components ของคุณอยู่ระดับเดียวกับ app หรือไม่
 import AdminGuard from "../../../components/AdminGuard";
+
+function TabIcon({ name, color, focused, badgeCount }) {
+  return (
+    <View style={[styles.iconContainer, focused && styles.iconContainerActive]}>
+      <Ionicons name={name} size={24} color={color} />
+      {!!badgeCount && badgeCount > 0 && (
+        <View style={styles.badge}>
+          <Text style={styles.badgeText}>
+            {badgeCount > 9 ? "9+" : badgeCount}
+          </Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
 function AdminTabsLayout() {
-  const notificationCount = 5;
+  // TODO: แนะนำให้ดึงจาก DB จริง เช่นจำนวน pending verifications
+  const notificationCount = 0;
 
   return (
     <Tabs
@@ -40,18 +56,11 @@ function AdminTabsLayout() {
         options={{
           title: "Dashboard",
           tabBarIcon: ({ color, focused }) => (
-            <View
-              style={[
-                styles.iconContainer,
-                focused && styles.iconContainerActive,
-              ]}
-            >
-              <Ionicons
-                name={focused ? "bar-chart" : "bar-chart-outline"}
-                size={24}
-                color={color}
-              />
-            </View>
+            <TabIcon
+              name={focused ? "bar-chart" : "bar-chart-outline"}
+              color={color}
+              focused={focused}
+            />
           ),
         }}
       />
@@ -61,18 +70,11 @@ function AdminTabsLayout() {
         options={{
           title: "Users",
           tabBarIcon: ({ color, focused }) => (
-            <View
-              style={[
-                styles.iconContainer,
-                focused && styles.iconContainerActive,
-              ]}
-            >
-              <Ionicons
-                name={focused ? "people" : "people-outline"}
-                size={24}
-                color={color}
-              />
-            </View>
+            <TabIcon
+              name={focused ? "people" : "people-outline"}
+              color={color}
+              focused={focused}
+            />
           ),
         }}
       />
@@ -82,46 +84,27 @@ function AdminTabsLayout() {
         options={{
           title: "Notifications",
           tabBarIcon: ({ color, focused }) => (
-            <View
-              style={[
-                styles.iconContainer,
-                focused && styles.iconContainerActive,
-              ]}
-            >
-              <Ionicons
-                name={focused ? "notifications" : "notifications-outline"}
-                size={24}
-                color={color}
-              />
-              {notificationCount > 0 && (
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>
-                    {notificationCount > 9 ? "9+" : notificationCount}
-                  </Text>
-                </View>
-              )}
-            </View>
+            <TabIcon
+              name={focused ? "notifications" : "notifications-outline"}
+              color={color}
+              focused={focused}
+              badgeCount={notificationCount}
+            />
           ),
         }}
       />
 
       <Tabs.Screen
-        name="adminprofile"
+        name="verifications"
         options={{
-          title: "Profile",
+          title: "Verifications",
           tabBarIcon: ({ color, focused }) => (
-            <View
-              style={[
-                styles.iconContainer,
-                focused && styles.iconContainerActive,
-              ]}
-            >
-              <Ionicons
-                name={focused ? "person" : "person-outline"}
-                size={24}
-                color={color}
-              />
-            </View>
+            <TabIcon
+              // ✅ Ionicons ไม่มี "verifications" ให้ใช้ไอคอนที่ใกล้เคียง
+              name={focused ? "shield-checkmark" : "shield-checkmark-outline"}
+              color={color}
+              focused={focused}
+            />
           ),
         }}
       />
@@ -131,18 +114,25 @@ function AdminTabsLayout() {
         options={{
           title: "Volunteers",
           tabBarIcon: ({ color, focused }) => (
-            <View
-              style={[
-                styles.iconContainer,
-                focused && styles.iconContainerActive,
-              ]}
-            >
-              <Ionicons
-                name={focused ? "people" : "people-outline"}
-                size={24}
-                color={color}
-              />
-            </View>
+            <TabIcon
+              name={focused ? "people" : "people-outline"}
+              color={color}
+              focused={focused}
+            />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="adminprofile"
+        options={{
+          title: "Profile",
+          tabBarIcon: ({ color, focused }) => (
+            <TabIcon
+              name={focused ? "person" : "person-outline"}
+              color={color}
+              focused={focused}
+            />
           ),
         }}
       />

@@ -38,21 +38,23 @@ export default function PetDetails() {
   const [buttonScale] = useState(new Animated.Value(1));
 
   useEffect(() => {
-    navigation.setOptions({
-      headerShown: false,
-    });
-
+    navigation.setOptions({ headerShown: false });
     fetchPet();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
   useEffect(() => {
     if (user && pet) checkFavorite();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, pet]);
 
   /* =======================
      Fetch pet
   ======================= */
   const fetchPet = async () => {
+    setLoading(true);
+
+    // pets public -> anon client ok
     const { data, error } = await supabase
       .from("pets")
       .select("*")
@@ -60,6 +62,7 @@ export default function PetDetails() {
       .single();
 
     if (error) {
+      setLoading(false);
       Alert.alert("ไม่พบข้อมูลสัตว์เลี้ยง");
       return;
     }
@@ -72,17 +75,22 @@ export default function PetDetails() {
      Favorite logic
   ======================= */
   const checkFavorite = async () => {
-    const token = await getToken({ template: "supabase" });
-    const supabaseAuth = createClerkSupabaseClient(token);
+    try {
+      const token = await getToken({ template: "supabase", skipCache: true });
+      const supabaseAuth = createClerkSupabaseClient(token);
 
-    const { data } = await supabaseAuth
-      .from("favorites")
-      .select("id")
-      .eq("user_id", user.id)
-      .eq("pet_id", pet.id)
-      .maybeSingle();
+      const { data, error } = await supabaseAuth
+        .from("favorites")
+        .select("id")
+        .eq("user_id", user.id)
+        .eq("pet_id", pet.id)
+        .maybeSingle();
 
-    setIsFavorite(!!data);
+      if (error) console.error("checkFavorite error:", error);
+      setIsFavorite(!!data);
+    } catch (e) {
+      console.error("checkFavorite exception:", e);
+    }
   };
 
   const toggleFavorite = async () => {
@@ -91,30 +99,75 @@ export default function PetDetails() {
       return;
     }
 
-    const token = await getToken({ template: "supabase" });
-    const supabaseAuth = createClerkSupabaseClient(token);
+    try {
+      const token = await getToken({ template: "supabase", skipCache: true });
+      const supabaseAuth = createClerkSupabaseClient(token);
 
-    if (isFavorite) {
-      await supabaseAuth
-        .from("favorites")
-        .delete()
-        .eq("user_id", user.id)
-        .eq("pet_id", pet.id);
-      setIsFavorite(false);
-    } else {
-      await supabaseAuth.from("favorites").insert([
-        {
-          user_id: user.id,
-          pet_id: pet.id,
-        },
-      ]);
-      setIsFavorite(true);
+      if (isFavorite) {
+        const { error } = await supabaseAuth
+          .from("favorites")
+          .delete()
+          .eq("user_id", user.id)
+          .eq("pet_id", pet.id);
+
+        if (error) throw error;
+        setIsFavorite(false);
+      } else {
+        const { error } = await supabaseAuth
+          .from("favorites")
+          .insert([{ user_id: user.id, pet_id: pet.id }]);
+
+        if (error) throw error;
+        setIsFavorite(true);
+      }
+    } catch (e) {
+      console.error("toggleFavorite error:", e);
+      Alert.alert("ทำรายการไม่สำเร็จ");
     }
   };
 
   /* =======================
-   Adoption Request
-======================= */
+     Verify / Trust check
+  ======================= */
+  const ensureVerifiedBeforeRequest = async () => {
+    try {
+      const token = await getToken({ template: "supabase", skipCache: true });
+      const supabaseAuth = createClerkSupabaseClient(token);
+
+      const { data: me, error } = await supabaseAuth
+        .from("users")
+        .select("id, clerk_id, verification_status, verified_at")
+        .eq("clerk_id", user.id)
+        .maybeSingle();
+
+      if (error) throw error;
+      if (!me) {
+        Alert.alert("ไม่พบโปรไฟล์ผู้ใช้", "กรุณาออกจากระบบแล้วเข้าสู่ระบบใหม่");
+        return { ok: false };
+      }
+
+      if (me.verification_status !== "verified") {
+        const msg =
+          me.verification_status === "pending"
+            ? "ตอนนี้อยู่ระหว่างตรวจสอบ กรุณารอสักครู่"
+            : "เพื่อความปลอดภัย กรุณายืนยันตัวตนก่อนส่งคำขอรับเลี้ยง";
+
+        Alert.alert("ต้องยืนยันตัวตนก่อน", msg);
+        router.push("/verify");
+        return { ok: false, me };
+      }
+
+      return { ok: true, me };
+    } catch (e) {
+      console.error("ensureVerifiedBeforeRequest error:", e);
+      Alert.alert("เกิดข้อผิดพลาด", e?.message || "ไม่สามารถตรวจสอบสถานะได้");
+      return { ok: false };
+    }
+  };
+
+  /* =======================
+     Adoption Request
+  ======================= */
   const openAdoptionRequest = async () => {
     if (!user) {
       Alert.alert("กรุณาเข้าสู่ระบบ");
@@ -126,59 +179,14 @@ export default function PetDetails() {
       return;
     }
 
-    setIsLoading(true);
+    const verified = await ensureVerifiedBeforeRequest();
+    if (!verified.ok) return;
 
-    try {
-      const token = await getToken({ template: "supabase" });
-      const supabaseAuth = createClerkSupabaseClient(token);
-
-      // 🔥 เช็คว่าสัตว์ตัวนี้ถูกรับเลี้ยงไปแล้วหรือยัง
-      const { data: currentPet } = await supabaseAuth
-        .from("pets")
-        .select("adoption_status")
-        .eq("id", pet.id)
-        .single();
-
-      if (currentPet?.adoption_status === "adopted") {
-        Alert.alert("ไม่สามารถส่งคำขอได้", "สัตว์ตัวนี้ถูกรับเลี้ยงไปแล้ว 😢");
-        return;
-      }
-
-      // 1️⃣ เช็คว่ามีคำขออยู่แล้วหรือยัง
-      const { data: existingRequest } = await supabaseAuth
-        .from("adoption_requests")
-        .select("id, status")
-        .eq("pet_id", pet.id)
-        .eq("requester_id", user.id)
-        .maybeSingle();
-
-      if (existingRequest) {
-        Alert.alert(
-          "คุณส่งคำขอไปแล้ว",
-          existingRequest.status === "pending"
-            ? "กรุณารอเจ้าของตอบกลับ"
-            : "คำขอของคุณถูกปิดไปแล้ว"
-        );
-        return;
-      }
-
-      // 2️⃣ สร้างคำขอใหม่
-      const { error } = await supabaseAuth.from("adoption_requests").insert({
-        pet_id: pet.id,
-        requester_id: user.id,
-        owner_id: pet.user_id,
-        status: "pending",
-      });
-
-      if (error) throw error;
-
-      Alert.alert("ส่งคำขอรับเลี้ยงสำเร็จ 🐶", "รอเจ้าของสัตว์ตอบกลับ");
-    } catch (err) {
-      console.error("Adoption request error:", err);
-      Alert.alert("ไม่สามารถส่งคำขอได้");
-    } finally {
-      setIsLoading(false);
-    }
+    // ✅ ไปหน้ากรอกฟอร์มแทนการ insert ทันที
+    router.push({
+      pathname: "/adoption-request/[petId]",
+      params: { petId: pet.id },
+    });
   };
 
   /* =======================
@@ -198,16 +206,18 @@ export default function PetDetails() {
     setIsLoading(true);
 
     try {
-      const token = await getToken({ template: "supabase" });
+      const token = await getToken({ template: "supabase", skipCache: true });
       const supabaseAuth = createClerkSupabaseClient(token);
 
       const chatId = [user.id, pet.user_id].sort().join("_");
 
-      const { data: existingChat } = await supabaseAuth
+      const { data: existingChat, error: chatErr } = await supabaseAuth
         .from("chats")
         .select("id")
         .eq("id", chatId)
         .maybeSingle();
+
+      if (chatErr) throw chatErr;
 
       if (!existingChat) {
         const { error } = await supabaseAuth.from("chats").insert({
@@ -253,7 +263,6 @@ export default function PetDetails() {
     );
   }
 
-  // 🔥 ตรวจสอบสถานะสัตว์ เพื่อแสดง UI ที่เหมาะสม
   const isAdopted = pet.adoption_status === "adopted";
 
   return (
@@ -270,12 +279,14 @@ export default function PetDetails() {
         <View style={{ height: 120 }} />
       </ScrollView>
 
-      {/* Bottom CTA */}
       <View style={styles.bottomContainer}>
         <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
           <TouchableOpacity
             style={[styles.adoptBtn, isAdopted && styles.adoptedBtn]}
-            onPress={openAdoptionRequest}
+            onPress={() => {
+              animateButton();
+              openAdoptionRequest();
+            }}
             disabled={isLoading || isAdopted}
           >
             <LinearGradient

@@ -1,7 +1,7 @@
-import { useUser } from "@clerk/clerk-expo";
+import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { useFocusEffect, useRouter } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Animated,
@@ -16,73 +16,82 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { supabase } from "../../config/supabaseClient";
+import {
+  createClerkSupabaseClient,
+  getRealtimeClient,
+} from "../../config/supabaseClient";
 
 export default function Inbox() {
   const { user, isLoaded } = useUser();
+  const { getToken } = useAuth();
   const router = useRouter();
+
   const [chats, setChats] = useState([]);
   const [filteredChats, setFilteredChats] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
+
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const channelRef = useRef(null);
 
-  // โหลด chats ครั้งแรก
+  const getClerkToken = async () => {
+    const token = await getToken({ template: "supabase", skipCache: true });
+    if (!token) throw new Error("Missing Clerk token");
+    return token;
+  };
+
+  // โหลด chats
   const loadChats = async () => {
     if (!user?.id) return;
 
     try {
-      // console.log("Current user.id:", user.id);
+      setLoading(true);
 
-      const { data: chatRows, error } = await supabase
+      const token = await getClerkToken();
+      const sb = createClerkSupabaseClient(token);
+
+      const { data: chatRows, error } = await sb
         .from("chats")
         .select("*")
         .or(`user1_id.eq.${user.id},user2_id.eq.${user.id}`)
         .order("last_message_at", { ascending: false });
 
-      if (error) {
-        console.error("Error loading chats:", error);
-        throw error;
-      }
-
-      // console.log("Chat rows:", chatRows);
+      if (error) throw error;
 
       const result = [];
+
       for (const chat of chatRows || []) {
         const otherUserId =
           chat.user1_id === user.id ? chat.user2_id : chat.user1_id;
 
-        // console.log("Other user ID:", otherUserId);
-
-        // ดึงข้อมูลจากตาราง users โดยใช้ clerk_id
-        const { data: userProfile, error: userError } = await supabase
+        const { data: userProfile, error: userError } = await sb
           .from("users")
           .select("full_name, avatar_url")
           .eq("clerk_id", otherUserId)
-          .single();
+          .maybeSingle();
 
-        if (userError) {
-          console.error("Error loading user profile:", userError);
-        }
+        if (userError) console.error("Error loading user profile:", userError);
 
-        // console.log("User profile:", userProfile);
-
-        const { data: lastMsg } = await supabase
+        const { data: lastMsg, error: lastMsgErr } = await sb
           .from("messages")
-          .select("*")
+          .select("text, created_at, sender_id, is_read")
           .eq("chat_id", chat.id)
           .order("created_at", { ascending: false })
           .limit(1)
-          .single();
+          .maybeSingle();
 
-        const { count: unreadCount } = await supabase
+        if (lastMsgErr)
+          console.error("Error loading last message:", lastMsgErr);
+
+        const { count: unreadCount, error: unreadErr } = await sb
           .from("messages")
-          .select("*", { count: "exact" })
+          .select("*", { count: "exact", head: true })
           .eq("chat_id", chat.id)
           .neq("sender_id", user.id)
-          .is("is_read", false);
+          .eq("is_read", false);
+
+        if (unreadErr) console.error("Error loading unread count:", unreadErr);
 
         result.push({
           ...chat,
@@ -90,19 +99,18 @@ export default function Inbox() {
             display_name: userProfile?.full_name || "Unknown User",
             avatar_url: userProfile?.avatar_url || null,
           },
-          last_message: lastMsg?.text || "",
+          last_message: lastMsg?.text || chat.last_message || "",
           last_message_at: lastMsg?.created_at || chat.last_message_at,
           unread_count: unreadCount || 0,
         });
       }
 
-      // console.log("Final result:", result);
       setChats(result);
       setFilteredChats(result);
 
       Animated.timing(fadeAnim, {
         toValue: 1,
-        duration: 300,
+        duration: 250,
         useNativeDriver: true,
       }).start();
     } catch (err) {
@@ -112,68 +120,194 @@ export default function Inbox() {
     }
   };
 
-  // Realtime: รับ message ใหม่เข้ามา
-  const setupRealtime = () => {
+  // ✅ อัปเดต chat ที่มีอยู่แล้วแบบ realtime (ไม่รีโหลดทั้งหมด)
+  const updateChatRealtime = async (chatId) => {
     if (!user?.id) return;
 
-    channelRef.current = supabase
-      .channel(`inbox-${user.id}`)
-      .on(
-        "postgres_changes",
-        { event: "INSERT", table: "messages", schema: "public" },
-        async (payload) => {
-          const newMsg = payload.new;
+    try {
+      const token = await getClerkToken();
+      const sb = createClerkSupabaseClient(token);
 
-          setChats((prevChats) => {
-            return prevChats.map((chat) => {
-              if (chat.id === newMsg.chat_id) {
-                return {
-                  ...chat,
-                  last_message: newMsg.text,
-                  last_message_at: newMsg.created_at,
-                  unread_count:
-                    chat.unread_count + (newMsg.sender_id !== user.id ? 1 : 0),
-                };
-              }
-              return chat;
-            });
-          });
+      // ดึงข้อมูลแชทนี้อย่างเดียว
+      const { data: chat, error: chatErr } = await sb
+        .from("chats")
+        .select("*")
+        .eq("id", chatId)
+        .maybeSingle();
+
+      if (chatErr || !chat) {
+        console.error("Error fetching chat:", chatErr);
+        return;
+      }
+
+      const otherUserId =
+        chat.user1_id === user.id ? chat.user2_id : chat.user1_id;
+
+      const { data: userProfile } = await sb
+        .from("users")
+        .select("full_name, avatar_url")
+        .eq("clerk_id", otherUserId)
+        .maybeSingle();
+
+      const { data: lastMsg } = await sb
+        .from("messages")
+        .select("text, created_at, sender_id, is_read")
+        .eq("chat_id", chat.id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      const { count: unreadCount } = await sb
+        .from("messages")
+        .select("*", { count: "exact", head: true })
+        .eq("chat_id", chat.id)
+        .neq("sender_id", user.id)
+        .eq("is_read", false);
+
+      const updatedChat = {
+        ...chat,
+        otherUser: {
+          display_name: userProfile?.full_name || "Unknown User",
+          avatar_url: userProfile?.avatar_url || null,
+        },
+        last_message: lastMsg?.text || chat.last_message || "",
+        last_message_at: lastMsg?.created_at || chat.last_message_at,
+        unread_count: unreadCount || 0,
+      };
+
+      // อัปเดต state แบบ smooth
+      setChats((prev) => {
+        const exists = prev.find((c) => c.id === chatId);
+
+        if (exists) {
+          // แชทมีอยู่แล้ว -> อัปเดต + เรียงใหม่
+          const updated = prev.map((c) => (c.id === chatId ? updatedChat : c));
+          return updated.sort(
+            (a, b) => new Date(b.last_message_at) - new Date(a.last_message_at)
+          );
+        } else {
+          // แชทใหม่ -> เพิ่มเข้าไป
+          return [updatedChat, ...prev];
         }
-      )
-      .on(
-        "postgres_changes",
-        { event: "UPDATE", table: "messages", schema: "public" },
-        async (payload) => {
-          // เมื่อมีการอ่านข้อความ ให้ reload chats
-          await loadChats();
-        }
-      )
-      .subscribe();
+      });
+
+      console.log("✅ Chat updated smoothly:", chatId);
+    } catch (err) {
+      console.error("updateChatRealtime error:", err);
+    }
   };
 
-  useEffect(() => {
-    loadChats();
-  }, [user?.id]);
+  // ✅ Realtime: อัปเดตแบบ smooth ไม่รีโหลดทั้งหมด
+  const setupRealtime = async () => {
+    if (!user?.id) return;
 
-  useEffect(() => {
-    setupRealtime();
+    try {
+      const token = await getClerkToken();
+      const rt = getRealtimeClient(token);
 
-    return () => {
-      if (channelRef.current) supabase.removeChannel(channelRef.current);
-    };
-  }, [user?.id]);
+      if (channelRef.current) {
+        channelRef.current.unsubscribe();
+        channelRef.current = null;
+      }
+
+      const ch = rt
+        .channel(`inbox-${user.id}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "INSERT",
+            schema: "public",
+            table: "messages",
+          },
+          (payload) => {
+            console.log("📩 New message inserted:", payload.new);
+            // อัปเดตเฉพาะแชทนั้น
+            updateChatRealtime(payload.new.chat_id);
+          }
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "UPDATE",
+            schema: "public",
+            table: "messages",
+          },
+          (payload) => {
+            console.log("✏️ Message updated:", payload.new);
+            // อัปเดตเฉพาะแชทนั้น (เช่น mark as read)
+            updateChatRealtime(payload.new.chat_id);
+          }
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "UPDATE",
+            schema: "public",
+            table: "chats",
+          },
+          (payload) => {
+            console.log("💬 Chat updated:", payload.new);
+            // อัปเดตเฉพาะแชทนั้น
+            updateChatRealtime(payload.new.id);
+          }
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "DELETE",
+            schema: "public",
+            table: "chats",
+          },
+          (payload) => {
+            console.log("🗑️ Chat deleted:", payload.old);
+            // ลบออกจาก state
+            setChats((prev) => prev.filter((c) => c.id !== payload.old.id));
+          }
+        )
+        .subscribe((status, err) => {
+          console.log("🔌 Realtime inbox status:", status);
+          if (err) console.error("❌ Realtime error:", err);
+        });
+
+      channelRef.current = ch;
+    } catch (e) {
+      console.error("setupRealtime error:", e);
+    }
+  };
+
+  // ✅ ใช้ useFocusEffect เพื่อ reconnect ทุกครั้งที่กลับมาหน้านี้
+  useFocusEffect(
+    useCallback(() => {
+      if (!user?.id) return;
+
+      console.log(
+        "📱 Inbox screen focused - loading chats & setting up realtime"
+      );
+      loadChats();
+      setupRealtime();
+
+      return () => {
+        console.log("👋 Inbox screen unfocused - cleaning up realtime");
+        if (channelRef.current) {
+          channelRef.current.unsubscribe();
+          channelRef.current = null;
+        }
+      };
+    }, [user?.id])
+  );
 
   // Search filter
   useEffect(() => {
     if (searchQuery.trim() === "") {
       setFilteredChats(chats);
     } else {
-      const filtered = chats.filter((chat) =>
-        chat.otherUser?.display_name
-          ?.toLowerCase()
-          .includes(searchQuery.toLowerCase())
+      setFilteredChats(
+        chats.filter((chat) =>
+          chat.otherUser?.display_name
+            ?.toLowerCase()
+            .includes(searchQuery.toLowerCase())
+        )
       );
-      setFilteredChats(filtered);
     }
   }, [searchQuery, chats]);
 
@@ -200,38 +334,28 @@ export default function Inbox() {
   };
 
   const handleDeleteChat = async (chatId) => {
-    Alert.alert(
-      "ลบการสนทนา",
-      "คุณแน่ใจหรือไม่ว่าต้องการลบการสนทนานี้ การกระทำนี้ไม่สามารถย้อนกลับได้",
-      [
-        {
-          text: "ยกเลิก",
-          style: "cancel",
-        },
-        {
-          text: "ลบ",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              // ลบข้อความทั้งหมดใน chat นี้
-              await supabase.from("messages").delete().eq("chat_id", chatId);
+    Alert.alert("ลบการสนทนา", "ต้องการลบการสนทนานี้ใช่ไหม?", [
+      { text: "ยกเลิก", style: "cancel" },
+      {
+        text: "ลบ",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            const token = await getClerkToken();
+            const sb = createClerkSupabaseClient(token);
 
-              // ลบ chat
-              await supabase.from("chats").delete().eq("id", chatId);
+            await sb.from("messages").delete().eq("chat_id", chatId);
+            await sb.from("chats").delete().eq("id", chatId);
 
-              // Reload chats
-              await loadChats();
-            } catch (error) {
-              console.error("Error deleting chat:", error);
-              Alert.alert(
-                "Error",
-                "Failed to delete conversation. Please try again."
-              );
-            }
-          },
+            // ลบออกจาก state ทันที (Realtime จะจัดการให้อยู่แล้ว)
+            setChats((prev) => prev.filter((c) => c.id !== chatId));
+          } catch (error) {
+            console.error("Error deleting chat:", error);
+            Alert.alert("Error", "Failed to delete conversation.");
+          }
         },
-      ]
-    );
+      },
+    ]);
   };
 
   const renderChatItem = ({ item }) => (
@@ -241,7 +365,6 @@ export default function Inbox() {
       style={styles.chatItem}
       activeOpacity={0.7}
     >
-      {/* Avatar */}
       <View style={styles.avatarContainer}>
         <Image
           source={{
@@ -251,7 +374,6 @@ export default function Inbox() {
         />
       </View>
 
-      {/* Message Content */}
       <View style={styles.messageContent}>
         <View style={styles.topRow}>
           <Text
@@ -278,6 +400,7 @@ export default function Inbox() {
           >
             {item.last_message || "ยังไม่มีข้อความ"}
           </Text>
+
           {item.unread_count > 0 && (
             <View style={styles.unreadBadge}>
               <Text style={styles.unreadText}>
@@ -310,11 +433,9 @@ export default function Inbox() {
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
 
-      {/* Header */}
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Messages</Text>
 
-        {/* Search Bar */}
         <View style={styles.searchContainer}>
           <Ionicons
             name="search-outline"
@@ -340,7 +461,6 @@ export default function Inbox() {
         </View>
       </View>
 
-      {/* Chat List */}
       <Animated.View style={[styles.listContainer, { opacity: fadeAnim }]}>
         {loading ? (
           <View style={styles.centerContainer}>
@@ -354,7 +474,7 @@ export default function Inbox() {
         ) : (
           <FlatList
             data={filteredChats}
-            keyExtractor={(item) => item.id}
+            keyExtractor={(item) => String(item.id)}
             renderItem={renderChatItem}
             refreshControl={
               <RefreshControl
@@ -375,10 +495,7 @@ export default function Inbox() {
 }
 
 const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-  },
+  safeArea: { flex: 1, backgroundColor: "#FFFFFF" },
   header: {
     backgroundColor: "#FFFFFF",
     paddingHorizontal: 20,
@@ -404,24 +521,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E5E7EB",
   },
-  searchIcon: {
-    marginRight: 8,
-  },
-  searchInput: {
-    flex: 1,
-    fontSize: 16,
-    color: "#111827",
-    paddingVertical: 0,
-  },
-  clearButton: {
-    padding: 4,
-  },
-  listContainer: {
-    flex: 1,
-  },
-  listContent: {
-    paddingVertical: 8,
-  },
+  searchIcon: { marginRight: 8 },
+  searchInput: { flex: 1, fontSize: 16, color: "#111827", paddingVertical: 0 },
+  clearButton: { padding: 4 },
+  listContainer: { flex: 1 },
+  listContent: { paddingVertical: 8 },
   chatItem: {
     flexDirection: "row",
     alignItems: "center",
@@ -429,19 +533,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     backgroundColor: "#FFFFFF",
   },
-  avatarContainer: {
-    position: "relative",
-    marginRight: 14,
-  },
+  avatarContainer: { position: "relative", marginRight: 14 },
   avatar: {
     width: 56,
     height: 56,
     borderRadius: 28,
     backgroundColor: "#F3F4F6",
   },
-  messageContent: {
-    flex: 1,
-  },
+  messageContent: { flex: 1 },
   topRow: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -455,15 +554,8 @@ const styles = StyleSheet.create({
     color: "#374151",
     marginRight: 8,
   },
-  userNameUnread: {
-    fontWeight: "700",
-    color: "#111827",
-  },
-  timeText: {
-    fontSize: 13,
-    color: "#9CA3AF",
-    fontWeight: "500",
-  },
+  userNameUnread: { fontWeight: "700", color: "#111827" },
+  timeText: { fontSize: 13, color: "#9CA3AF", fontWeight: "500" },
   bottomRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -476,10 +568,7 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     marginRight: 8,
   },
-  lastMessageUnread: {
-    fontWeight: "600",
-    color: "#374151",
-  },
+  lastMessageUnread: { fontWeight: "600", color: "#374151" },
   unreadBadge: {
     backgroundColor: "#8B5CF6",
     borderRadius: 12,
@@ -489,25 +578,15 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  unreadText: {
-    color: "#FFFFFF",
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  separator: {
-    height: 1,
-    backgroundColor: "#F3F4F6",
-    marginLeft: 90,
-  },
+  unreadText: { color: "#FFFFFF", fontSize: 12, fontWeight: "700" },
+  separator: { height: 1, backgroundColor: "#F3F4F6", marginLeft: 90 },
   centerContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
     paddingHorizontal: 32,
   },
-  loadingContainer: {
-    alignItems: "center",
-  },
+  loadingContainer: { alignItems: "center" },
   loadingText: {
     marginTop: 16,
     fontSize: 16,

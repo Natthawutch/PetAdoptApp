@@ -1,8 +1,9 @@
-import { useUser } from "@clerk/clerk-expo";
+import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import {
+  Alert,
   FlatList,
   Image,
   KeyboardAvoidingView,
@@ -14,66 +15,93 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { supabase } from "../../config/supabaseClient";
+import { createClerkSupabaseClient } from "../../config/supabaseClient";
 
 export default function ChatScreen() {
   const { id } = useLocalSearchParams();
   const chatId = String(id);
+
   const { user } = useUser();
+  const { getToken } = useAuth();
   const router = useRouter();
+
   const [messages, setMessages] = useState([]);
   const [text, setText] = useState("");
   const [otherUser, setOtherUser] = useState(null);
+
   const channelRef = useRef(null);
   const flatListRef = useRef(null);
+
+  const getSb = async () => {
+    const token = await getToken({ template: "supabase", skipCache: true });
+    if (!token) throw new Error("No clerk token");
+    const sb = createClerkSupabaseClient(token);
+    sb.realtime.setAuth(token);
+    return sb;
+  };
+
+  const parseIdsFromChatId = () => {
+    const parts = chatId.split("_");
+    if (parts.length !== 2) return null;
+    return { a: parts[0], b: parts[1] };
+  };
+
+  const ensureChatExists = async (sb) => {
+    const { data: chat, error } = await sb
+      .from("chats")
+      .select("*")
+      .eq("id", chatId)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (chat) return chat;
+
+    const ids = parseIdsFromChatId();
+    if (!ids) throw new Error("Invalid chatId format");
+
+    if (user?.id !== ids.a && user?.id !== ids.b) {
+      throw new Error("You are not participant of this chat");
+    }
+
+    const payload = {
+      id: chatId,
+      user1_id: ids.a,
+      user2_id: ids.b,
+      last_message: "",
+      last_message_at: new Date().toISOString(),
+    };
+
+    const { error: createErr } = await sb.from("chats").insert(payload);
+    if (createErr) throw createErr;
+
+    return payload;
+  };
 
   const loadChatInfo = async () => {
     if (!user?.id || !chatId) return;
 
     try {
-      // console.log("Loading chat info for chatId:", chatId);
-      // console.log("Current user.id:", user.id);
+      const sb = await getSb();
+      const chat = await ensureChatExists(sb);
 
-      // โหลดข้อมูล chat และ other user
-      const { data: chat, error: chatError } = await supabase
-        .from("chats")
-        .select("*")
-        .eq("id", chatId)
-        .single();
+      const otherUserId =
+        chat.user1_id === user.id ? chat.user2_id : chat.user1_id;
 
-      if (chatError) {
-        console.error("Error loading chat:", chatError);
-        return;
-      }
+      const { data: profile, error: profileErr } = await sb
+        .from("users")
+        .select("full_name, avatar_url")
+        .eq("clerk_id", otherUserId)
+        .maybeSingle();
 
-      // console.log("Chat data:", chat);
+      if (profileErr) console.error("profileErr:", profileErr);
 
-      if (chat) {
-        const otherUserId =
-          chat.user1_id === user.id ? chat.user2_id : chat.user1_id;
-
-        // console.log("Other user ID:", otherUserId);
-
-        // ดึงข้อมูลจากตาราง users โดยใช้ clerk_id
-        const { data: userProfile, error: userError } = await supabase
-          .from("users")
-          .select("full_name, avatar_url")
-          .eq("clerk_id", otherUserId)
-          .single();
-
-        if (userError) {
-          console.error("Error loading user profile:", userError);
-        }
-
-        // console.log("User profile:", userProfile);
-
-        setOtherUser({
-          display_name: userProfile?.full_name || "Unknown User",
-          avatar_url: userProfile?.avatar_url || null,
-        });
-      }
-    } catch (err) {
-      console.error("loadChatInfo error:", err);
+      setOtherUser({
+        display_name: profile?.full_name || "Unknown User",
+        avatar_url: profile?.avatar_url || null,
+      });
+    } catch (e) {
+      console.error("loadChatInfo error:", e);
+      Alert.alert("โหลดแชทไม่สำเร็จ");
     }
   };
 
@@ -81,100 +109,157 @@ export default function ChatScreen() {
     if (!user?.id || !chatId) return;
 
     try {
-      const { data, error } = await supabase
+      const sb = await getSb();
+      await ensureChatExists(sb);
+
+      const { data, error } = await sb
         .from("messages")
         .select("*")
         .eq("chat_id", chatId)
-        .order("created_at");
+        .order("created_at", { ascending: true });
 
-      if (error) {
-        console.error("Error loading messages:", error);
-        return;
-      }
+      if (error) throw error;
 
       setMessages(data || []);
 
-      // Mark unread as read
-      await supabase
+      await sb
         .from("messages")
         .update({ is_read: true, read_at: new Date().toISOString() })
         .eq("chat_id", chatId)
         .neq("sender_id", user.id)
         .eq("is_read", false);
 
-      // Update last_message_at in chats
-      if (data?.length > 0) {
-        const lastMsg = data[data.length - 1];
-        await supabase
-          .from("chats")
-          .update({
-            last_message: lastMsg.text,
-            last_message_at: lastMsg.created_at,
-          })
-          .eq("id", chatId);
-      }
-
-      // Scroll to bottom
       setTimeout(() => {
         flatListRef.current?.scrollToEnd({ animated: true });
-      }, 100);
-    } catch (err) {
-      console.error("loadMessages error:", err);
+      }, 80);
+    } catch (e) {
+      console.error("loadMessages error:", e);
     }
   };
 
+  const setupRealtime = async () => {
+    if (!chatId || !user?.id) return;
+
+    try {
+      const sb = await getSb();
+      await ensureChatExists(sb);
+
+      // กัน subscribe ซ้ำ
+      if (channelRef.current) {
+        await channelRef.current.unsubscribe();
+        channelRef.current = null;
+      }
+
+      const ch = sb
+        .channel(`chat-${chatId}`)
+        .on(
+          "postgres_changes",
+          {
+            event: "INSERT",
+            schema: "public",
+            table: "messages",
+            filter: `chat_id=eq.${chatId}`,
+          },
+          (payload) => {
+            console.log("📩 New message received:", payload.new);
+            setMessages((prev) => [...prev, payload.new]);
+
+            // Mark as read ถ้าไม่ใช่ข้อความของเรา
+            if (payload.new.sender_id !== user.id) {
+              (async () => {
+                const sb = await getSb();
+                await sb
+                  .from("messages")
+                  .update({ is_read: true, read_at: new Date().toISOString() })
+                  .eq("id", payload.new.id);
+              })();
+            }
+
+            setTimeout(() => {
+              flatListRef.current?.scrollToEnd({ animated: true });
+            }, 50);
+          }
+        )
+        .on(
+          "postgres_changes",
+          {
+            event: "UPDATE",
+            schema: "public",
+            table: "messages",
+            filter: `chat_id=eq.${chatId}`,
+          },
+          (payload) => {
+            console.log("✏️ Message updated:", payload.new);
+            setMessages((prev) =>
+              prev.map((msg) => (msg.id === payload.new.id ? payload.new : msg))
+            );
+          }
+        )
+        .subscribe((status, err) => {
+          console.log("Realtime chat status:", status);
+          if (err) console.error("Realtime error:", err);
+        });
+
+      channelRef.current = ch;
+    } catch (e) {
+      console.error("setup realtime error:", e);
+    }
+  };
+
+  // ✅ ใช้ useFocusEffect เพื่อ reconnect ทุกครั้งที่กลับมาหน้านี้
   useFocusEffect(
     useCallback(() => {
+      if (!user?.id || !chatId) return;
+
+      console.log(
+        "💬 Chat screen focused - loading messages & setting up realtime"
+      );
       loadChatInfo();
       loadMessages();
+      setupRealtime();
+
+      return () => {
+        console.log("👋 Chat screen unfocused - cleaning up realtime");
+        if (channelRef.current) {
+          channelRef.current.unsubscribe();
+          channelRef.current = null;
+        }
+      };
     }, [chatId, user?.id])
   );
-
-  useEffect(() => {
-    if (!chatId) return;
-
-    channelRef.current = supabase
-      .channel(`chat-${chatId}`)
-      .on(
-        "postgres_changes",
-        { event: "INSERT", table: "messages", schema: "public" },
-        (payload) => {
-          // console.log("New message received:", payload.new);
-          setMessages((prev) => [...prev, payload.new]);
-          setTimeout(() => {
-            flatListRef.current?.scrollToEnd({ animated: true });
-          }, 100);
-        }
-      )
-      .subscribe();
-
-    return () => {
-      if (channelRef.current) supabase.removeChannel(channelRef.current);
-    };
-  }, [chatId]);
 
   const sendMessage = async () => {
     if (!text.trim() || !user?.id) return;
 
     try {
-      const { error } = await supabase.from("messages").insert({
+      const sb = await getSb();
+      await ensureChatExists(sb);
+
+      const msg = text.trim();
+      const now = new Date().toISOString();
+
+      const { error } = await sb.from("messages").insert({
         chat_id: chatId,
         sender_id: user.id,
         user_id: user.id,
         user_name: user.fullName,
         user_avatar_url: user.imageUrl,
-        text: text.trim(),
-        created_at: new Date().toISOString(),
+        text: msg,
+        created_at: now,
         is_read: false,
       });
 
-      if (error) {
-        console.error("Error sending message:", error);
-      }
+      if (error) throw error;
+
+      await sb
+        .from("chats")
+        .update({ last_message: msg, last_message_at: now })
+        .eq("id", chatId);
 
       setText("");
-    } catch (err) {
-      console.error("sendMessage error:", err);
+    } catch (e) {
+      console.error("sendMessage error:", e);
+      Alert.alert("ส่งข้อความไม่สำเร็จ");
     }
   };
 
@@ -242,7 +327,6 @@ export default function ChatScreen() {
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Custom Header */}
       <View style={styles.header}>
         <TouchableOpacity
           onPress={() => router.back()}
@@ -265,10 +349,6 @@ export default function ChatScreen() {
             </Text>
           </View>
         </View>
-
-        <TouchableOpacity style={styles.moreButton} activeOpacity={0.7}>
-          <Ionicons name="ellipsis-vertical" size={24} color="#111827" />
-        </TouchableOpacity>
       </View>
 
       <KeyboardAvoidingView
@@ -276,11 +356,10 @@ export default function ChatScreen() {
         behavior={Platform.OS === "ios" ? "padding" : "height"}
         keyboardVerticalOffset={Platform.OS === "ios" ? 0 : 20}
       >
-        {/* Messages List */}
         <FlatList
           ref={flatListRef}
           data={messages}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item) => String(item.id)}
           renderItem={renderMessage}
           contentContainerStyle={styles.messagesList}
           showsVerticalScrollIndicator={false}
@@ -289,12 +368,7 @@ export default function ChatScreen() {
           }
         />
 
-        {/* Input Area */}
         <View style={styles.inputContainer}>
-          <TouchableOpacity style={styles.attachButton} activeOpacity={0.7}>
-            <Ionicons name="add-circle" size={28} color="#8B5CF6" />
-          </TouchableOpacity>
-
           <View style={styles.inputWrapper}>
             <TextInput
               value={text}
@@ -329,10 +403,7 @@ export default function ChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#F9FAFB",
-  },
+  container: { flex: 1, backgroundColor: "#F9FAFB" },
   header: {
     flexDirection: "row",
     alignItems: "center",
@@ -342,14 +413,8 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#F3F4F6",
   },
-  backButton: {
-    marginRight: 8,
-  },
-  headerCenter: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-  },
+  backButton: { marginRight: 8 },
+  headerCenter: { flex: 1, flexDirection: "row", alignItems: "center" },
   headerAvatar: {
     width: 40,
     height: 40,
@@ -357,87 +422,39 @@ const styles = StyleSheet.create({
     marginRight: 12,
     backgroundColor: "#F3F4F6",
   },
-  headerTextContainer: {
-    flex: 1,
-  },
-  headerName: {
-    fontSize: 17,
-    fontWeight: "700",
-    color: "#111827",
-  },
-  moreButton: {
-    marginLeft: 8,
-  },
-  keyboardView: {
-    flex: 1,
-  },
-  messagesList: {
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-  },
+  headerTextContainer: { flex: 1 },
+  headerName: { fontSize: 17, fontWeight: "700", color: "#111827" },
+  keyboardView: { flex: 1 },
+  messagesList: { paddingHorizontal: 16, paddingVertical: 12 },
   messageRow: {
     flexDirection: "row",
     marginVertical: 4,
     alignItems: "flex-end",
   },
-  myMessageRow: {
-    justifyContent: "flex-end",
-  },
-  otherMessageRow: {
-    justifyContent: "flex-start",
-  },
-  avatarContainer: {
-    marginRight: 8,
-    width: 32,
-  },
-  messageAvatar: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
-    backgroundColor: "#F3F4F6",
-  },
-  avatarSpacer: {
-    width: 32,
-    height: 32,
-  },
+  myMessageRow: { justifyContent: "flex-end" },
+  otherMessageRow: { justifyContent: "flex-start" },
+  avatarContainer: { marginRight: 8, width: 32 },
+  messageAvatar: { width: 32, height: 32, borderRadius: 16 },
+  avatarSpacer: { width: 32, height: 32 },
   messageBubble: {
     maxWidth: "75%",
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 20,
   },
-  myMessageBubble: {
-    backgroundColor: "#8B5CF6",
-    borderBottomRightRadius: 4,
-  },
+  myMessageBubble: { backgroundColor: "#8B5CF6", borderBottomRightRadius: 4 },
   otherMessageBubble: {
     backgroundColor: "#FFFFFF",
     borderBottomLeftRadius: 4,
     borderWidth: 1,
     borderColor: "#E5E7EB",
   },
-  messageText: {
-    fontSize: 15,
-    lineHeight: 20,
-    marginBottom: 4,
-  },
-  myMessageText: {
-    color: "#FFFFFF",
-  },
-  otherMessageText: {
-    color: "#111827",
-  },
-  timeText: {
-    fontSize: 11,
-    fontWeight: "500",
-  },
-  myTimeText: {
-    color: "rgba(255, 255, 255, 0.7)",
-    textAlign: "right",
-  },
-  otherTimeText: {
-    color: "#9CA3AF",
-  },
+  messageText: { fontSize: 15, lineHeight: 20, marginBottom: 4 },
+  myMessageText: { color: "#FFFFFF" },
+  otherMessageText: { color: "#111827" },
+  timeText: { fontSize: 11, fontWeight: "500" },
+  myTimeText: { color: "rgba(255,255,255,0.7)", textAlign: "right" },
+  otherTimeText: { color: "#9CA3AF" },
   inputContainer: {
     flexDirection: "row",
     alignItems: "flex-end",
@@ -446,10 +463,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#FFFFFF",
     borderTopWidth: 1,
     borderTopColor: "#F3F4F6",
-  },
-  attachButton: {
-    marginRight: 8,
-    marginBottom: 8,
   },
   inputWrapper: {
     flex: 1,
@@ -462,11 +475,7 @@ const styles = StyleSheet.create({
     minHeight: 44,
     maxHeight: 120,
   },
-  input: {
-    fontSize: 15,
-    color: "#111827",
-    lineHeight: 20,
-  },
+  input: { fontSize: 15, color: "#111827", lineHeight: 20 },
   sendButton: {
     width: 44,
     height: 44,
@@ -476,7 +485,5 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginLeft: 8,
   },
-  sendButtonDisabled: {
-    backgroundColor: "#F3F4F6",
-  },
+  sendButtonDisabled: { backgroundColor: "#F3F4F6" },
 });
