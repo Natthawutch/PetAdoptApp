@@ -1,7 +1,9 @@
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
+import * as FileSystem from "expo-file-system/legacy";
+import * as ImagePicker from "expo-image-picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -24,10 +26,17 @@ export default function ReportDetail() {
   const [report, setReport] = useState(null);
   const [reporter, setReporter] = useState(null);
   const [volunteer, setVolunteer] = useState(null);
+  const [currentUserId, setCurrentUserId] = useState(null);
+
   const [loading, setLoading] = useState(true);
+
+  // ✅ หลักฐาน
+  const [evidence, setEvidence] = useState([]); // [{ uri }]
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     loadReport();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadReport = async () => {
@@ -36,40 +45,49 @@ export default function ReportDetail() {
       const token = await getToken({ template: "supabase" });
       const supabase = createClerkSupabaseClient(token);
 
-      // 1. ดึงข้อมูล report
+      // 0) current user uuid
+      if (user?.id) {
+        const { data: me, error: meErr } = await supabase
+          .from("users")
+          .select("id")
+          .eq("clerk_id", user.id)
+          .single();
+
+        if (!meErr) setCurrentUserId(me?.id || null);
+      }
+
+      // 1) report
       const { data: reportData, error: reportError } = await supabase
         .from("reports")
         .select("*")
         .eq("id", id)
         .single();
 
-      console.log("📄 Report:", reportData, reportError);
-
       if (reportError) throw reportError;
       setReport(reportData);
 
-      // 2. ดึงข้อมูลผู้แจ้ง
+      // 2) reporter
       if (reportData.user_id) {
         const { data: userData } = await supabase
           .from("users")
           .select("full_name, email")
           .eq("clerk_id", reportData.user_id)
           .single();
-
-        console.log("👤 Reporter:", userData);
-        setReporter(userData);
+        setReporter(userData || null);
+      } else {
+        setReporter(null);
       }
 
-      // 3. ดึงข้อมูลอาสาสมัคร (ถ้ามี)
+      // 3) assigned volunteer
       if (reportData.assigned_volunteer_id) {
         const { data: volunteerData } = await supabase
           .from("users")
           .select("full_name, email")
           .eq("id", reportData.assigned_volunteer_id)
           .single();
-
-        console.log("🦸 Volunteer:", volunteerData);
-        setVolunteer(volunteerData);
+        setVolunteer(volunteerData || null);
+      } else {
+        setVolunteer(null);
       }
     } catch (e) {
       console.error("❌ Load report error:", e);
@@ -78,6 +96,19 @@ export default function ReportDetail() {
       setLoading(false);
     }
   };
+
+  const canAccept = useMemo(() => {
+    return report?.status === "pending" && !report?.assigned_volunteer_id;
+  }, [report]);
+
+  const canComplete = useMemo(() => {
+    // ✅ ปิดเคสได้เฉพาะอาสาที่รับผิดชอบเท่านั้น
+    return (
+      report?.status === "in_progress" &&
+      !!currentUserId &&
+      report?.assigned_volunteer_id === currentUserId
+    );
+  }, [report, currentUserId]);
 
   const handleAccept = async () => {
     Alert.alert("รับเคสนี้", "คุณต้องการรับผิดชอบเคสนี้หรือไม่?", [
@@ -89,14 +120,13 @@ export default function ReportDetail() {
             const token = await getToken({ template: "supabase" });
             const supabase = createClerkSupabaseClient(token);
 
-            // ดึง user uuid จาก users table
-            const { data: currentUser } = await supabase
+            const { data: currentUser, error: userErr } = await supabase
               .from("users")
               .select("id")
               .eq("clerk_id", user.id)
               .single();
 
-            if (!currentUser) {
+            if (userErr || !currentUser) {
               Alert.alert("เกิดข้อผิดพลาด", "ไม่พบข้อมูลผู้ใช้");
               return;
             }
@@ -112,7 +142,8 @@ export default function ReportDetail() {
             if (error) throw error;
 
             Alert.alert("สำเร็จ", "คุณรับเคสนี้แล้ว");
-            loadReport(); // Reload เพื่อแสดงข้อมูลใหม่
+            setEvidence([]);
+            loadReport();
           } catch (e) {
             console.error("❌ Accept error:", e);
             Alert.alert("เกิดข้อผิดพลาด", "ไม่สามารถรับเคสได้");
@@ -125,11 +156,186 @@ export default function ReportDetail() {
   const openMap = () => {
     if (report?.latitude && report?.longitude) {
       Linking.openURL(
-        `https://www.google.com/maps?q=${report.latitude},${report.longitude}`
+        `https://www.google.com/maps?q=${report.latitude},${report.longitude}`,
       );
     } else {
       Alert.alert("ไม่มีพิกัด", "รายงานนี้ไม่มีข้อมูลพิกัด GPS");
     }
+  };
+
+  // ============ ✅ Evidence picker ============
+  const pickEvidence = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("ต้องอนุญาต", "กรุณาอนุญาตเข้าถึงรูปภาพก่อน");
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      allowsMultipleSelection: true,
+      selectionLimit: 3,
+      quality: 0.5, // ✅ ลดขนาดรูป ลดโอกาสหลุด
+    });
+
+    if (!result.canceled) {
+      const assets = result.assets || [];
+      setEvidence(assets.map((a) => ({ uri: a.uri })));
+    }
+  };
+
+  const takeEvidencePhoto = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== "granted") {
+      Alert.alert("ต้องอนุญาต", "กรุณาอนุญาตเข้าถึงกล้องก่อน");
+      return;
+    }
+
+    const result = await ImagePicker.launchCameraAsync({
+      quality: 0.5, // ✅ ลดขนาดรูป ลดโอกาสหลุด
+    });
+
+    if (!result.canceled) {
+      const asset = result.assets?.[0];
+      if (asset?.uri) setEvidence([{ uri: asset.uri }]);
+    }
+  };
+
+  const removeEvidenceAt = (index) => {
+    setEvidence((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  // ============ ✅ Upload helper ============
+  const getExt = (uri) => {
+    const clean = uri.split("?")[0].toLowerCase();
+    const match = clean.match(/\.(png|jpg|jpeg|webp)$/);
+    return match ? match[1].replace("jpeg", "jpg") : "jpg";
+  };
+
+  const guessContentType = (ext) => {
+    if (ext === "png") return "image/png";
+    if (ext === "webp") return "image/webp";
+    return "image/jpeg";
+  };
+
+  const base64ToUint8Array = (base64) => {
+    // ✅ แก้ไขใช้ atob แทน b64decode
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  };
+
+  const uploadEvidenceImages = async (supabase, reportId, evidenceArr) => {
+    const bucket = "report-evidence";
+    const uploadedUrls = [];
+
+    // จำกัดจำนวนรูป กัน crash
+    const items = evidenceArr.slice(0, 3);
+
+    for (let i = 0; i < items.length; i++) {
+      const uri = items[i].uri;
+
+      console.log("📤 Uploading:", uri);
+
+      // 1) เช็คไฟล์มีอยู่จริง
+      const fileInfo = await FileSystem.getInfoAsync(uri);
+      if (!fileInfo.exists) {
+        throw new Error(`File not found: ${uri}`);
+      }
+
+      // 2) อ่านไฟล์เป็น base64
+      const base64 = await FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      const ext = getExt(uri);
+      const contentType = guessContentType(ext);
+
+      // 3) แปลง base64 → Uint8Array
+      const bytes = base64ToUint8Array(base64);
+
+      const path = `reports/${reportId}/${Date.now()}_${i}.${ext}`;
+
+      // 4) Upload เข้า Supabase Storage
+      const { error: uploadError } = await supabase.storage
+        .from(bucket)
+        .upload(path, bytes, {
+          contentType,
+          upsert: false,
+        });
+
+      if (uploadError) {
+        console.error("❌ Storage upload error:", uploadError);
+        throw uploadError;
+      }
+
+      // 5) เอา public URL
+      const { data: publicData } = supabase.storage
+        .from(bucket)
+        .getPublicUrl(path);
+
+      if (!publicData?.publicUrl) {
+        throw new Error("Cannot get public URL");
+      }
+
+      uploadedUrls.push(publicData.publicUrl);
+    }
+
+    return uploadedUrls;
+  };
+
+  const handleCompleteWithEvidence = async () => {
+    if (!canComplete) {
+      Alert.alert("ทำไม่ได้", "คุณไม่ใช่อาสาที่รับผิดชอบเคสนี้");
+      return;
+    }
+    if (!evidence.length) {
+      Alert.alert("ต้องแนบหลักฐาน", "กรุณาแนบรูปหลักฐานก่อนปิดเคส");
+      return;
+    }
+
+    Alert.alert("ปิดเคส", "ยืนยันว่าช่วยเหลือสำเร็จและแนบหลักฐานแล้วใช่ไหม?", [
+      { text: "ยกเลิก", style: "cancel" },
+      {
+        text: "ยืนยัน",
+        onPress: async () => {
+          try {
+            setSubmitting(true);
+            const token = await getToken({ template: "supabase" });
+            const supabase = createClerkSupabaseClient(token);
+
+            const urls = await uploadEvidenceImages(
+              supabase,
+              report.id,
+              evidence,
+            );
+
+            const { error } = await supabase
+              .from("reports")
+              .update({
+                status: "completed",
+                completed_at: new Date().toISOString(),
+                evidence_urls: urls,
+              })
+              .eq("id", report.id);
+
+            if (error) throw error;
+
+            Alert.alert("สำเร็จ", "ปิดเคสเรียบร้อยแล้ว");
+            setEvidence([]);
+            loadReport();
+          } catch (e) {
+            console.error("❌ complete with evidence error:", e);
+            Alert.alert("เกิดข้อผิดพลาด", "อัปโหลดหลักฐานหรือปิดเคสไม่สำเร็จ");
+          } finally {
+            setSubmitting(false);
+          }
+        },
+      },
+    ]);
   };
 
   const getStatusStyle = (status) => {
@@ -219,7 +425,7 @@ export default function ReportDetail() {
         </View>
       )}
 
-      {/* Header Section */}
+      {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerTop}>
           <View
@@ -230,8 +436,8 @@ export default function ReportDetail() {
                   report.animal_type === "สุนัข"
                     ? "#dbeafe"
                     : report.animal_type === "แมว"
-                    ? "#fce7f3"
-                    : "#f3f4f6",
+                      ? "#fce7f3"
+                      : "#f3f4f6",
               },
             ]}
           >
@@ -240,33 +446,19 @@ export default function ReportDetail() {
                 report.animal_type === "สุนัข"
                   ? "paw"
                   : report.animal_type === "แมว"
-                  ? "fish"
-                  : "help-circle"
+                    ? "fish"
+                    : "help-circle"
               }
               size={20}
               color={
                 report.animal_type === "สุนัข"
                   ? "#2563eb"
                   : report.animal_type === "แมว"
-                  ? "#ec4899"
-                  : "#6b7280"
+                    ? "#ec4899"
+                    : "#6b7280"
               }
             />
-            <Text
-              style={[
-                styles.animalText,
-                {
-                  color:
-                    report.animal_type === "สุนัข"
-                      ? "#2563eb"
-                      : report.animal_type === "แมว"
-                      ? "#ec4899"
-                      : "#6b7280",
-                },
-              ]}
-            >
-              {report.animal_type}
-            </Text>
+            <Text style={styles.animalText}>{report.animal_type}</Text>
           </View>
 
           <View
@@ -294,11 +486,10 @@ export default function ReportDetail() {
         </View>
       </View>
 
-      {/* Info Cards */}
+      {/* Info */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>ข้อมูลเพิ่มเติม</Text>
 
-        {/* Location Card */}
         <View style={styles.infoCard}>
           <View style={styles.infoIcon}>
             <Ionicons name="location" size={24} color="#ef4444" />
@@ -317,7 +508,6 @@ export default function ReportDetail() {
           </View>
         </View>
 
-        {/* Coordinates Card */}
         {report.latitude && report.longitude && (
           <View style={styles.infoCard}>
             <View style={styles.infoIcon}>
@@ -335,7 +525,6 @@ export default function ReportDetail() {
           </View>
         )}
 
-        {/* Reporter Card */}
         <View style={styles.infoCard}>
           <View style={styles.infoIcon}>
             <Ionicons name="person" size={24} color="#8b5cf6" />
@@ -357,7 +546,6 @@ export default function ReportDetail() {
           </View>
         </View>
 
-        {/* Assigned Volunteer */}
         {report.assigned_volunteer_id && (
           <View style={styles.infoCard}>
             <View style={styles.infoIcon}>
@@ -382,8 +570,41 @@ export default function ReportDetail() {
         )}
       </View>
 
-      {/* Action Buttons */}
-      {report.status === "pending" && !report.assigned_volunteer_id && (
+      {/* ✅ หลักฐานหลัง completed */}
+      {report.status === "completed" &&
+        Array.isArray(report.evidence_urls) &&
+        report.evidence_urls.length > 0 && (
+          <View style={{ paddingHorizontal: 20, paddingBottom: 10 }}>
+            <Text
+              style={{
+                fontSize: 18,
+                fontWeight: "800",
+                color: "#1e293b",
+                marginBottom: 10,
+              }}
+            >
+              หลักฐานการช่วยเหลือ
+            </Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+              {report.evidence_urls.map((url, idx) => (
+                <Image
+                  key={idx}
+                  source={{ uri: url }}
+                  style={{
+                    width: 110,
+                    height: 110,
+                    borderRadius: 14,
+                    marginRight: 10,
+                    backgroundColor: "#e5e7eb",
+                  }}
+                />
+              ))}
+            </ScrollView>
+          </View>
+        )}
+
+      {/* Action */}
+      {canAccept && (
         <View style={styles.actionSection}>
           <TouchableOpacity style={styles.acceptButton} onPress={handleAccept}>
             <Ionicons name="checkmark-circle" size={20} color="#fff" />
@@ -397,9 +618,79 @@ export default function ReportDetail() {
           <View style={styles.infoBox}>
             <Ionicons name="information-circle" size={20} color="#2563eb" />
             <Text style={styles.infoBoxText}>
-              เคสนี้กำลังดำเนินการโดยอาสาสมัคร
+              {canComplete
+                ? "คุณรับผิดชอบเคสนี้อยู่ — แนบหลักฐานแล้วกดปิดเคส"
+                : "เคสนี้กำลังดำเนินการโดยอาสาสมัคร"}
             </Text>
           </View>
+
+          {canComplete && (
+            <>
+              <View style={{ flexDirection: "row", gap: 10, marginTop: 12 }}>
+                <TouchableOpacity
+                  style={styles.secondaryBtn}
+                  onPress={pickEvidence}
+                  disabled={submitting}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="image-outline" size={18} color="#111827" />
+                  <Text style={styles.secondaryBtnText}>แนบรูป</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.secondaryBtn}
+                  onPress={takeEvidencePhoto}
+                  disabled={submitting}
+                  activeOpacity={0.85}
+                >
+                  <Ionicons name="camera-outline" size={18} color="#111827" />
+                  <Text style={styles.secondaryBtnText}>ถ่ายรูป</Text>
+                </TouchableOpacity>
+              </View>
+
+              {evidence.length > 0 && (
+                <ScrollView
+                  horizontal
+                  style={{ marginTop: 12 }}
+                  showsHorizontalScrollIndicator={false}
+                >
+                  {evidence.map((img, idx) => (
+                    <View key={idx} style={{ marginRight: 10 }}>
+                      <Image
+                        source={{ uri: img.uri }}
+                        style={styles.evidenceThumb}
+                      />
+                      <TouchableOpacity
+                        onPress={() => removeEvidenceAt(idx)}
+                        style={styles.removeEvidenceBtn}
+                        activeOpacity={0.85}
+                      >
+                        <Ionicons name="close" size={14} color="#fff" />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                </ScrollView>
+              )}
+
+              <TouchableOpacity
+                style={[styles.completeButton, submitting && { opacity: 0.75 }]}
+                onPress={handleCompleteWithEvidence}
+                disabled={submitting}
+                activeOpacity={0.85}
+              >
+                {submitting ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="checkmark-done" size={20} color="#fff" />
+                    <Text style={styles.completeButtonText}>
+                      ปิดเคส (แนบหลักฐาน)
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       )}
 
@@ -420,21 +711,15 @@ export default function ReportDetail() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#f8fafc",
-  },
+  container: { flex: 1, backgroundColor: "#f8fafc" },
   loadingContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
     backgroundColor: "#f8fafc",
   },
-  loadingText: {
-    marginTop: 12,
-    fontSize: 14,
-    color: "#64748b",
-  },
+  loadingText: { marginTop: 12, fontSize: 14, color: "#64748b" },
+
   errorContainer: {
     flex: 1,
     justifyContent: "center",
@@ -461,16 +746,9 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
     borderRadius: 12,
   },
-  backButtonText: {
-    color: "#fff",
-    fontWeight: "600",
-    fontSize: 15,
-  },
-  image: {
-    width: "100%",
-    height: 300,
-    backgroundColor: "#e5e7eb",
-  },
+  backButtonText: { color: "#fff", fontWeight: "600", fontSize: 15 },
+
+  image: { width: "100%", height: 300, backgroundColor: "#e5e7eb" },
   imagePlaceholder: {
     width: "100%",
     height: 300,
@@ -478,11 +756,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
-  imagePlaceholderText: {
-    marginTop: 12,
-    fontSize: 14,
-    color: "#94a3b8",
-  },
+  imagePlaceholderText: { marginTop: 12, fontSize: 14, color: "#94a3b8" },
+
   header: {
     backgroundColor: "#fff",
     padding: 20,
@@ -495,6 +770,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 16,
   },
+
   animalBadge: {
     flexDirection: "row",
     alignItems: "center",
@@ -503,10 +779,8 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     gap: 6,
   },
-  animalText: {
-    fontSize: 14,
-    fontWeight: "700",
-  },
+  animalText: { fontSize: 14, fontWeight: "700", color: "#1e293b" },
+
   statusBadge: {
     flexDirection: "row",
     alignItems: "center",
@@ -515,40 +789,22 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     gap: 4,
   },
-  statusText: {
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: "800",
-    color: "#1e293b",
-    marginBottom: 8,
-  },
-  detail: {
-    fontSize: 16,
-    color: "#475569",
-    lineHeight: 24,
-    marginBottom: 12,
-  },
-  timeRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  timeText: {
-    fontSize: 13,
-    color: "#94a3b8",
-  },
-  section: {
-    padding: 20,
-  },
+  statusText: { fontSize: 12, fontWeight: "700" },
+
+  title: { fontSize: 24, fontWeight: "800", color: "#1e293b", marginBottom: 8 },
+  detail: { fontSize: 16, color: "#475569", lineHeight: 24, marginBottom: 12 },
+
+  timeRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  timeText: { fontSize: 13, color: "#94a3b8" },
+
+  section: { padding: 20 },
   sectionTitle: {
     fontSize: 18,
     fontWeight: "700",
     color: "#1e293b",
     marginBottom: 12,
   },
+
   infoCard: {
     flexDirection: "row",
     backgroundColor: "#fff",
@@ -570,39 +826,26 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginRight: 12,
   },
-  infoContent: {
-    flex: 1,
-  },
+  infoContent: { flex: 1 },
   infoLabel: {
     fontSize: 12,
     fontWeight: "600",
     color: "#94a3b8",
     marginBottom: 4,
   },
-  infoValue: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#1e293b",
-  },
-  coordText: {
-    fontSize: 13,
-    color: "#475569",
-    marginTop: 2,
-  },
+  infoValue: { fontSize: 15, fontWeight: "600", color: "#1e293b" },
+  coordText: { fontSize: 13, color: "#475569", marginTop: 2 },
+
   mapButton: {
     flexDirection: "row",
     alignItems: "center",
     marginTop: 8,
     gap: 4,
   },
-  mapButtonText: {
-    fontSize: 13,
-    fontWeight: "600",
-    color: "#2563eb",
-  },
-  actionSection: {
-    padding: 20,
-  },
+  mapButtonText: { fontSize: 13, fontWeight: "600", color: "#2563eb" },
+
+  actionSection: { padding: 20 },
+
   acceptButton: {
     backgroundColor: "#ef4444",
     flexDirection: "row",
@@ -617,11 +860,8 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 4,
   },
-  acceptButtonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "700",
-  },
+  acceptButtonText: { color: "#fff", fontSize: 16, fontWeight: "700" },
+
   infoBox: {
     flexDirection: "row",
     alignItems: "center",
@@ -630,10 +870,59 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     gap: 12,
   },
-  infoBoxText: {
+  infoBoxText: { flex: 1, fontSize: 14, fontWeight: "600", color: "#2563eb" },
+
+  secondaryBtn: {
     flex: 1,
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#2563eb",
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    paddingVertical: 12,
+    borderRadius: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
   },
+  secondaryBtnText: { fontSize: 14, fontWeight: "700", color: "#111827" },
+
+  evidenceThumb: {
+    width: 90,
+    height: 90,
+    borderRadius: 12,
+    backgroundColor: "#e5e7eb",
+  },
+  removeEvidenceBtn: {
+    position: "absolute",
+    top: -6,
+    right: -6,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: "#ef4444",
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+
+  completeButton: {
+    marginTop: 12,
+    backgroundColor: "#16a34a",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 16,
+    borderRadius: 16,
+    gap: 8,
+    shadowColor: "#16a34a",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  completeButtonText: { color: "#fff", fontSize: 16, fontWeight: "800" },
 });

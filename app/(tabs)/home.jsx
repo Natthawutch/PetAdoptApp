@@ -14,44 +14,62 @@ import {
   View,
 } from "react-native";
 import Header from "../../components/Home/header";
-// import Slider from "../../components/Home/slider";
 import { supabase } from "../../config/supabaseClient";
 
 export default function Home() {
   const { user } = useUser();
   const router = useRouter();
+
   const [pets, setPets] = useState([]);
   const [filteredPets, setFilteredPets] = useState([]);
   const [loadingPets, setLoadingPets] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [showFilterModal, setShowFilterModal] = useState(false);
 
-  // Filter States
+  // ✅ ยึด adoption_status เป็นตัวจริง
+  // available = แสดง, adopted = ไม่แสดง
+  const VISIBLE_ADOPTION_STATUS = "available";
+
   const [filters, setFilters] = useState({
     category: "ทั้งหมด",
     sex: "ทั้งหมด",
     breed: "ทั้งหมด",
   });
 
-  // Dynamic Options (ดึงจากฐานข้อมูลจริง)
   const [availableCategories, setAvailableCategories] = useState([]);
   const [availableBreeds, setAvailableBreeds] = useState([]);
+
+  // ✅ helper: เช็คการแสดงแบบกันทุกเคส
+  const isVisiblePet = (p) => {
+    const st = (p?.adoption_status ?? "").toString().trim().toLowerCase();
+    // แสดงเฉพาะ available เท่านั้น
+    if (st !== VISIBLE_ADOPTION_STATUS) return false;
+
+    // กันเหนียว ถ้ามี field adopted เป็น true ก็ไม่แสดง
+    if (p?.adopted === true) return false;
+
+    return true;
+  };
 
   const fetchPets = async () => {
     setLoadingPets(true);
     try {
+      // ✅ กรองที่ DB ก่อน (หมายเหตุ: eq จะ case-sensitive บางที)
+      // ถ้าคุณเก็บเป็น "available" ตัวเล็กใน DB ทั้งหมด -> ใช้ eq ได้เลย
       const { data, error } = await supabase
         .from("pets")
         .select("*")
-        .eq("post_status", "Available")
+        .eq("adoption_status", "available")
+        .neq("adopted", true)
         .order("created_at", { ascending: false });
 
       if (error) throw error;
 
-      const petsData = data || [];
+      // ✅ กันหลุดซ้ำในแอป (รองรับกรณีบางแถวเป็น "Available"/มีช่องว่าง)
+      const petsData = (data || []).filter(isVisiblePet);
+
       setPets(petsData);
 
-      // --- ดึงหมวดหมู่และสายพันธุ์ทั้งหมดที่มีจริงใน DB มาสร้างปุ่ม Filter ---
       const categories = [
         "ทั้งหมด",
         ...new Set(petsData.map((p) => p.category).filter(Boolean)),
@@ -71,18 +89,17 @@ export default function Home() {
     }
   };
 
-  // Logic การกรองแบบครอบคลุม
   const applyFilters = () => {
-    let result = [...pets];
+    let result = pets.filter(isVisiblePet);
 
     if (filters.category !== "ทั้งหมด") {
       result = result.filter((pet) => pet.category === filters.category);
     }
 
     if (filters.sex !== "ทั้งหมด") {
-      // เทียบค่าเพศแบบไม่สนใจตัวเล็กตัวใหญ่
       result = result.filter(
-        (pet) => pet.sex?.toString().toLowerCase() === filters.sex.toLowerCase()
+        (pet) =>
+          pet.sex?.toString().toLowerCase() === filters.sex.toLowerCase(),
       );
     }
 
@@ -98,21 +115,10 @@ export default function Home() {
       .channel("pets-realtime")
       .on(
         "postgres_changes",
-        {
-          event: "*", // INSERT | UPDATE | DELETE
-          schema: "public",
-          table: "pets",
-        },
-        (payload) => {
-          console.log("🔄 Realtime event:", payload.eventType);
-
-          // วิธีง่ายและปลอดภัย
-          fetchPets();
-        }
+        { event: "*", schema: "public", table: "pets" },
+        () => fetchPets(),
       )
-      .subscribe((status) => {
-        console.log("📡 Realtime status:", status);
-      });
+      .subscribe();
 
     return () => {
       supabase.removeChannel(channel);
@@ -136,7 +142,6 @@ export default function Home() {
     router.push({ pathname: "/pet-details", params: { ...pet } });
   };
 
-  // UI Helpers
   const getGenderIcon = (sex) => {
     const s = sex?.toLowerCase();
     if (s === "ผู้" || s === "male")
@@ -147,6 +152,9 @@ export default function Home() {
   };
 
   const renderPetItem = ({ item }) => {
+    // ✅ ชั้นสุดท้าย กันหลุดก่อน render
+    if (!isVisiblePet(item)) return null;
+
     const gender = getGenderIcon(item.sex);
     return (
       <TouchableOpacity
@@ -166,8 +174,8 @@ export default function Home() {
               {item.category === "สุนัข"
                 ? "🐶"
                 : item.category === "แมว"
-                ? "🐱"
-                : "🐾"}{" "}
+                  ? "🐱"
+                  : "🐾"}{" "}
               {item.category}
             </Text>
           </View>
@@ -213,21 +221,19 @@ export default function Home() {
   return (
     <SafeAreaView style={styles.screen}>
       <Header />
+
       <FlatList
         ListHeaderComponent={
-          <>
-            {/* <Slider /> */}
-            <View style={styles.filterTitleArea}>
-              <Text style={styles.mainTitle}>สัตว์เลี้ยงใกล้คุณ</Text>
-              <TouchableOpacity
-                style={styles.filterTrigger}
-                onPress={() => setShowFilterModal(true)}
-              >
-                <Ionicons name="options" size={20} color="#FFF" />
-                <Text style={styles.filterTriggerText}>ตัวกรอง</Text>
-              </TouchableOpacity>
-            </View>
-          </>
+          <View style={styles.filterTitleArea}>
+            <Text style={styles.mainTitle}>สัตว์เลี้ยงใกล้คุณ</Text>
+            <TouchableOpacity
+              style={styles.filterTrigger}
+              onPress={() => setShowFilterModal(true)}
+            >
+              <Ionicons name="options" size={20} color="#FFF" />
+              <Text style={styles.filterTriggerText}>ตัวกรอง</Text>
+            </TouchableOpacity>
+          </View>
         }
         data={filteredPets}
         renderItem={renderPetItem}
@@ -239,10 +245,13 @@ export default function Home() {
           !loadingPets && (
             <View style={styles.emptyBox}>
               <Ionicons name="paw-outline" size={60} color="#DDD" />
-              <Text style={styles.emptyText}>ไม่พบน้องๆ ที่ตรงกับการค้นหา</Text>
+              <Text style={styles.emptyText}>
+                ตอนนี้ยังไม่มีน้องที่ “พร้อมรับเลี้ยง”
+              </Text>
             </View>
           )
         }
+        showsVerticalScrollIndicator={false}
       />
 
       {/* Filter Modal */}
@@ -257,7 +266,6 @@ export default function Home() {
             </View>
 
             <ScrollView style={{ padding: 20 }}>
-              {/* Category Filter */}
               <Text style={styles.groupLabel}>ประเภท</Text>
               <View style={styles.chipRow}>
                 {availableCategories.map((cat) => (
@@ -281,7 +289,6 @@ export default function Home() {
                 ))}
               </View>
 
-              {/* Sex Filter */}
               <Text style={styles.groupLabel}>เพศ</Text>
               <View style={styles.chipRow}>
                 {["ทั้งหมด", "ผู้", "เมีย"].map((sex) => (
@@ -305,7 +312,6 @@ export default function Home() {
                 ))}
               </View>
 
-              {/* Breed Filter */}
               <Text style={styles.groupLabel}>สายพันธุ์</Text>
               <View style={styles.chipRow}>
                 {availableBreeds.map((brd) => (
@@ -343,6 +349,7 @@ export default function Home() {
               >
                 <Text style={styles.resetBtnText}>ล้างค่า</Text>
               </TouchableOpacity>
+
               <TouchableOpacity
                 style={styles.applyBtn}
                 onPress={() => setShowFilterModal(false)}
@@ -501,4 +508,5 @@ const styles = StyleSheet.create({
   },
   applyBtnText: { color: "#FFF", fontWeight: "800", fontSize: 16 },
   emptyBox: { alignItems: "center", marginTop: 60, gap: 10 },
+  emptyText: { color: "#9CA3AF", fontWeight: "600" },
 });

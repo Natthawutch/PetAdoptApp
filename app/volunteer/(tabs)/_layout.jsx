@@ -1,71 +1,76 @@
 import { Ionicons } from "@expo/vector-icons";
-import { Redirect, Tabs } from "expo-router";
-import { useEffect, useState } from "react";
-import { ActivityIndicator, View } from "react-native";
-import { getUserRole } from "../../../utils/roleStorage";
+import { Tabs } from "expo-router";
+
 export default function VolunteerTabsLayout() {
-  const [role, setRole] = useState(null);
-
-  useEffect(() => {
-    getUserRole().then(setRole);
-  }, []);
-
-  if (!role) {
-    return (
-      <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-        <ActivityIndicator />
-      </View>
-    );
-  }
-
-  // ❌ ไม่ใช่อาสา → เตะกลับ user
-  if (role !== "volunteer") {
-    return <Redirect href="/(tabs)/home" />;
-  }
-
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
-        tabBarActiveTintColor: "#22c55e",
+        tabBarActiveTintColor: "#8B5CF6",
       }}
     >
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: "หน้าแรก",
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="home" color={color} size={size} />
-          ),
-        }}
-      />
-
+      {/* 🥇 Reports = งานหลัก */}
       <Tabs.Screen
         name="reports"
         options={{
-          title: "แจ้งเหตุ",
+          title: "เคสช่วยเหลือ",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="alert-circle" color={color} size={size} />
+            <Ionicons name="alert-circle-outline" size={size} color={color} />
           ),
         }}
       />
 
+      {/* 🥈 Dashboard */}
+      <Tabs.Screen
+        name="index"
+        options={{
+          title: "แดชบอร์ด",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="speedometer-outline" size={size} color={color} />
+          ),
+        }}
+      />
+
+      {/* 🥉 Chat */}
+      <Tabs.Screen
+        name="chats"
+        options={{
+          title: "แชท",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="chatbubbles-outline" size={size} color={color} />
+          ),
+        }}
+      />
+
+      {/* Notifications */}
       <Tabs.Screen
         name="notifications"
         options={{
           title: "แจ้งเตือน",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="notifications" color={color} size={size} />
+            <Ionicons name="notifications-outline" size={size} color={color} />
           ),
         }}
       />
 
+      {/* Adoption */}
+      <Tabs.Screen
+        name="adoption"
+        options={{
+          title: "หาบ้าน",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="home-outline" size={size} color={color} />
+          ),
+        }}
+      />
+
+      {/* Profile = ท้ายสุดเสมอ */}
       <Tabs.Screen
         name="profile"
         options={{
           title: "โปรไฟล์",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="person" color={color} size={size} />
+            <Ionicons name="person-outline" size={size} color={color} />
           ),
         }}
       />

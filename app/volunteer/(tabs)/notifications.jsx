@@ -106,8 +106,8 @@ export default function VolunteerNotifications() {
       if (!error) {
         setNotifications((prev) =>
           prev.map((n) =>
-            n.id === notificationId ? { ...n, unread: false } : n
-          )
+            n.id === notificationId ? { ...n, unread: false } : n,
+          ),
         );
         setUnreadCount((prev) => Math.max(0, prev - 1));
       }
@@ -156,10 +156,10 @@ export default function VolunteerNotifications() {
 
             if (!error) {
               const deletedNotif = notifications.find(
-                (n) => n.id === notificationId
+                (n) => n.id === notificationId,
               );
               setNotifications((prev) =>
-                prev.filter((n) => n.id !== notificationId)
+                prev.filter((n) => n.id !== notificationId),
               );
               if (deletedNotif?.unread) {
                 setUnreadCount((prev) => Math.max(0, prev - 1));
@@ -210,7 +210,7 @@ export default function VolunteerNotifications() {
           if (payload.new.unread) {
             setUnreadCount((prev) => prev + 1);
           }
-        }
+        },
       )
       .on(
         "postgres_changes",
@@ -223,7 +223,7 @@ export default function VolunteerNotifications() {
         (payload) => {
           console.log("📝 Updated notification:", payload);
           setNotifications((prev) =>
-            prev.map((n) => (n.id === payload.new.id ? payload.new : n))
+            prev.map((n) => (n.id === payload.new.id ? payload.new : n)),
           );
           // อัพเดท unread count
           const oldUnread = payload.old.unread;
@@ -233,7 +233,7 @@ export default function VolunteerNotifications() {
           } else if (!oldUnread && newUnread) {
             setUnreadCount((prev) => prev + 1);
           }
-        }
+        },
       )
       .on(
         "postgres_changes",
@@ -246,12 +246,12 @@ export default function VolunteerNotifications() {
         (payload) => {
           console.log("🗑️ Deleted notification:", payload);
           setNotifications((prev) =>
-            prev.filter((n) => n.id !== payload.old.id)
+            prev.filter((n) => n.id !== payload.old.id),
           );
           if (payload.old.unread) {
             setUnreadCount((prev) => Math.max(0, prev - 1));
           }
-        }
+        },
       )
       .subscribe((status) => {
         console.log("📡 Realtime status:", status);
@@ -260,7 +260,7 @@ export default function VolunteerNotifications() {
           console.warn("⚠️ Channel error (may auto-recover)");
           setTimeout(() => {
             setStatus((current) =>
-              current === "CHANNEL_ERROR" ? current : ""
+              current === "CHANNEL_ERROR" ? current : "",
             );
           }, 2000);
         } else if (status === "TIMED_OUT") {

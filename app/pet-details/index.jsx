@@ -209,7 +209,8 @@ export default function PetDetails() {
       const token = await getToken({ template: "supabase", skipCache: true });
       const supabaseAuth = createClerkSupabaseClient(token);
 
-      const chatId = [user.id, pet.user_id].sort().join("_");
+      const pair = [user.id, volunteerId].sort().join("_");
+      const chatId = `${petId}_${pair}`; // ✅ unique per pet
 
       const { data: existingChat, error: chatErr } = await supabaseAuth
         .from("chats")
@@ -222,8 +223,8 @@ export default function PetDetails() {
       if (!existingChat) {
         const { error } = await supabaseAuth.from("chats").insert({
           id: chatId,
-          user1_id: user.id,
-          user2_id: pet.user_id,
+          user1_id: pair.split("_")[0],
+          user2_id: pair.split("_")[1],
           last_message: "",
           last_message_at: new Date().toISOString(),
         });

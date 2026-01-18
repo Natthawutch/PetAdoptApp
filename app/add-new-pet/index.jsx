@@ -1,10 +1,12 @@
-import { useUser } from "@clerk/clerk-expo";
-import { Video } from "expo-av";
+import { useAuth, useUser } from "@clerk/clerk-expo";
 import * as ImagePicker from "expo-image-picker";
 import { useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   Image,
+  KeyboardAvoidingView,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -13,742 +15,509 @@ import {
   View,
 } from "react-native";
 import AuthWrapper from "../../components/AuthWrapper";
-import { supabase } from "../../config/supabaseClient";
+import {
+  createClerkSupabaseClient,
+  supabase,
+} from "../../config/supabaseClient";
 
 export default function AddNewPetForm() {
   const { user } = useUser();
+  const { getToken } = useAuth();
+
+  // ----- Form States (ตรงตาม Database Columns) -----
   const [petName, setPetName] = useState("");
-  const [category, setCategory] = useState("");
+  const [category, setCategory] = useState("สุนัข"); // Default เป็นสุนัข
   const [breed, setBreed] = useState("");
   const [age, setAge] = useState("");
   const [weight, setWeight] = useState("");
-  const [sex, setSex] = useState("");
+  const [sex, setSex] = useState("ผู้");
   const [address, setAddress] = useState("");
-  const [desc, setDesc] = useState("");
+  const [about, setAbout] = useState("");
   const [personality, setPersonality] = useState("");
   const [vaccineHistory, setVaccineHistory] = useState("");
-  const [isNeutered, setIsNeutered] = useState("");
+  const [isNeutered, setIsNeutered] = useState("ยังไม่ได้ทำ");
   const [postStatus, setPostStatus] = useState("Available");
-  const [images, setImages] = useState([]); // เก็บรูปภาพหลายรูป
-  const [video, setVideo] = useState(null); // เก็บวิดีโอ 1 คลิป
+
+  // ----- Media States -----
+  const [images, setImages] = useState([]);
+  const [video, setVideo] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState({
+    current: 0,
+    total: 0,
+  });
+
+  /* -------------------- Media Picker Logic -------------------- */
 
   const pickImages = async () => {
-    if (images.length >= 5) {
-      return Alert.alert("เต็มแล้ว", "เลือกได้สูงสุด 5 รูปเท่านั้น");
-    }
-
+    if (images.length >= 5)
+      return Alert.alert("จำกัดรูป", "เลือกได้สูงสุด 5 รูป");
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsMultipleSelection: true,
-      quality: 0.7,
       selectionLimit: 5 - images.length,
+      quality: 0.7,
     });
-
-    if (!result.canceled) {
-      setImages([...images, ...result.assets]);
-    }
+    if (!result.canceled) setImages([...images, ...result.assets]);
   };
 
   const pickVideo = async () => {
-    if (video) {
-      return Alert.alert("มีวิดีโอแล้ว", "เลือกได้เพียง 1 วิดีโอเท่านั้น");
-    }
-
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Videos,
       allowsEditing: true,
       quality: 0.7,
     });
-
-    if (!result.canceled) {
-      setVideo(result.assets[0]);
-    }
+    if (!result.canceled) setVideo(result.assets[0]);
   };
 
-  const removeImage = (index) => {
-    const newImages = images.filter((_, i) => i !== index);
-    setImages(newImages);
-  };
-
-  const removeVideo = () => {
-    setVideo(null);
-  };
-
-  const uploadFileToSupabase = async (uri, isVideo = false) => {
+  const uploadFile = async (uri, userId, isVideo = false) => {
     const response = await fetch(uri);
     const arrayBuffer = await response.arrayBuffer();
-
-    const fileExtension = isVideo ? "mp4" : "jpg";
-    const fileName = `${Date.now()}_${Math.random()
+    const ext = isVideo ? "mp4" : "jpg";
+    const bucket = isVideo ? "pets-videos" : "pets-images";
+    const path = `${userId}/${Date.now()}-${Math.random()
       .toString(36)
-      .substring(7)}.${fileExtension}`;
-    const bucketName = isVideo ? "pets-videos" : "pets-images";
+      .substring(7)}.${ext}`;
 
-    const { data, error } = await supabase.storage
-      .from(bucketName)
-      .upload(fileName, arrayBuffer, {
+    const { error } = await supabase.storage
+      .from(bucket)
+      .upload(path, arrayBuffer, {
         contentType: isVideo ? "video/mp4" : "image/jpeg",
       });
 
     if (error) throw error;
-
-    const { data: publicUrl } = supabase.storage
-      .from(bucketName)
-      .getPublicUrl(fileName);
-
-    return publicUrl.publicUrl;
+    return supabase.storage.from(bucket).getPublicUrl(path).data.publicUrl;
   };
 
+  const resetForm = () => {
+    setPetName("");
+    setCategory("สุนัข");
+    setBreed("");
+    setAge("");
+    setWeight("");
+    setSex("ผู้");
+    setAddress("");
+    setAbout("");
+    setPersonality("");
+    setVaccineHistory("");
+    setIsNeutered("ยังไม่ได้ทำ");
+    setPostStatus("Available");
+
+    setImages([]);
+    setVideo(null);
+  };
+
+  /* -------------------- Submit Logic -------------------- */
+
   const submitPet = async () => {
-    if (
-      !petName ||
-      !category ||
-      !breed ||
-      !age ||
-      !sex ||
-      !address ||
-      !desc ||
-      !personality ||
-      images.length === 0
-    ) {
+    if (!petName || !category || !sex || images.length === 0) {
       return Alert.alert(
-        "ไม่สำเร็จ",
-        "กรุณากรอกข้อมูลที่จำเป็นให้ครบ และเลือกรูปภาพอย่างน้อย 1 รูป 😊"
+        "ข้อมูลไม่ครบ",
+        "กรุณาระบุชื่อ ประเภท เพศ และเพิ่มรูปอย่างน้อย 1 รูป",
       );
     }
 
     setUploading(true);
-
     try {
-      // Upload รูปภาพทั้งหมด
+      const token = await getToken({ template: "supabase" });
+      const supabaseClerk = createClerkSupabaseClient(token);
+
+      // 1. Upload Images
       const imageUrls = await Promise.all(
-        images.map((img) => uploadFileToSupabase(img.uri, false))
+        images.map((img) => uploadFile(img.uri, user.id, false)),
       );
 
-      // Upload วิดีโอ (ถ้ามี)
-      let videoUrl = null;
-      if (video) {
-        videoUrl = await uploadFileToSupabase(video.uri, true);
-      }
+      // 2. Upload Video (if any)
+      let videoUrl = video ? await uploadFile(video.uri, user.id, true) : null;
 
-      // Insert pet into Supabase
-      const { error } = await supabase.from("pets").insert([
+      // 3. Insert into Database
+      const { error } = await supabaseClerk.from("pets").insert([
         {
           name: petName,
-          category: category,
-          breed: breed,
-          age: parseInt(age),
-          weight: weight ? parseFloat(weight) : null,
-          sex: sex,
-          address: address,
-          about: desc,
-          personality: personality,
-          vaccine_history: vaccineHistory || null,
-          is_neutered: isNeutered || null,
+          category,
+          breed,
+          age: parseInt(age) || 0,
+          weight: parseFloat(weight) || 0,
+          sex,
+          address,
+          about,
+          personality,
+          vaccine_history: vaccineHistory,
+          is_neutered: isNeutered,
           post_status: postStatus,
-          image_url: imageUrls[0], // รูปแรกเป็นรูปหลัก
-          images: JSON.stringify(imageUrls), // เก็บรูปทั้งหมดเป็น JSON
+          image_url: imageUrls[0], // รูปหลัก (รูปแรก)
+          images: imageUrls, // บันทึกเป็น Array ของ URL
           video_url: videoUrl,
-          username: user.fullName || user.firstName || "Unknown",
+          user_id: user.id,
+          username: user.fullName || user.firstName || "Unknown User",
           email: user.primaryEmailAddress?.emailAddress || "",
           userImage: user.imageUrl || "",
-          user_id: user.id,
         },
       ]);
 
       if (error) throw error;
 
-      Alert.alert("สำเร็จ! 🎉", "เพิ่มข้อมูลสัตว์เลี้ยงเรียบร้อยแล้ว");
+      Alert.alert("สำเร็จ! 🎉", "เพิ่มข้อมูลน้องเรียบร้อยแล้ว", [
+        {
+          text: "ตกลง",
+          onPress: () => {
+            resetForm();
+          },
+        },
+      ]);
 
-      // Reset form
-      setPetName("");
-      setCategory("");
-      setBreed("");
-      setAge("");
-      setWeight("");
-      setSex("");
-      setAddress("");
-      setDesc("");
-      setPersonality("");
-      setVaccineHistory("");
-      setIsNeutered("");
-      setPostStatus("Available");
-      setImages([]);
-      setVideo(null);
-    } catch (error) {
-      Alert.alert("เกิดข้อผิดพลาด", error.message);
+      // Reset Form...
+    } catch (err) {
+      Alert.alert("เกิดข้อผิดพลาด", err.message);
+    } finally {
+      setUploading(false);
     }
-
-    setUploading(false);
   };
 
-  const CategoryButton = ({ icon, label, value }) => (
-    <TouchableOpacity
-      style={[
-        styles.categoryBtn,
-        category === value && styles.categoryBtnActive,
-      ]}
-      onPress={() => setCategory(value)}
-    >
-      <Text style={styles.categoryIcon}>{icon}</Text>
-      <Text
-        style={[
-          styles.categoryText,
-          category === value && styles.categoryTextActive,
-        ]}
-      >
-        {label}
-      </Text>
-    </TouchableOpacity>
-  );
-
-  const SexButton = ({ label, value }) => (
-    <TouchableOpacity
-      style={[styles.sexBtn, sex === value && styles.sexBtnActive]}
-      onPress={() => setSex(value)}
-    >
-      <Text style={[styles.sexText, sex === value && styles.sexTextActive]}>
-        {label}
-      </Text>
-    </TouchableOpacity>
-  );
-
-  const NeuteredButton = ({ label, value }) => (
-    <TouchableOpacity
-      style={[styles.sexBtn, isNeutered === value && styles.sexBtnActive]}
-      onPress={() => setIsNeutered(value)}
-    >
-      <Text
-        style={[styles.sexText, isNeutered === value && styles.sexTextActive]}
-      >
-        {label}
-      </Text>
-    </TouchableOpacity>
-  );
-
-  const StatusButton = ({ label, value, color }) => (
-    <TouchableOpacity
-      style={[
-        styles.statusBtn,
-        postStatus === value && {
-          ...styles.statusBtnActive,
-          borderColor: color,
-        },
-      ]}
-      onPress={() => setPostStatus(value)}
-    >
-      <Text
-        style={[
-          styles.statusText,
-          postStatus === value && {
-            ...styles.statusTextActive,
-            color: color,
-          },
-        ]}
-      >
-        {label}
-      </Text>
-    </TouchableOpacity>
-  );
+  /* -------------------- UI Components -------------------- */
 
   return (
     <AuthWrapper>
-      <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-        <View style={styles.content}>
-          {/* Header */}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        style={{ flex: 1 }}
+      >
+        <ScrollView
+          style={styles.container}
+          showsVerticalScrollIndicator={false}
+        >
           <View style={styles.header}>
-            <Text style={styles.title}>เพิ่มสัตว์เลี้ยง</Text>
-            <Text style={styles.subtitle}>กรอกข้อมูลน้องสัตว์ของคุณ</Text>
+            <Text style={styles.title}>เพิ่มสัตว์เลี้ยงใหม่ 🐾</Text>
+            <Text style={styles.subtitle}>
+              แชร์ข้อมูลน้องๆ เพื่อช่วยให้พวกเขาได้บ้านใหม่
+            </Text>
           </View>
 
           {/* Media Section */}
-          <View style={styles.section}>
-            <Text style={styles.label}>
-              รูปภาพและวิดีโอ <Text style={styles.required}>*</Text>
-            </Text>
-            <Text style={styles.helperText}>
-              รูปภาพ: {images.length}/5 | วิดีโอ: {video ? "1/1" : "0/1"}
-            </Text>
+          <View style={styles.card}>
+            <Text style={styles.label}>รูปภาพน้องๆ (สูงสุด 5 รูป) *</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.mediaRow}
+            >
+              <TouchableOpacity style={styles.addMediaBox} onPress={pickImages}>
+                <Text style={styles.plusIcon}>+</Text>
+                <Text style={styles.addText}>{images.length}/5</Text>
+              </TouchableOpacity>
 
-            {/* Image Grid */}
-            {images.length > 0 && (
-              <View style={styles.mediaGrid}>
-                {images.map((img, index) => (
-                  <View key={index} style={styles.mediaItem}>
-                    <Image
-                      source={{ uri: img.uri }}
-                      style={styles.mediaThumbnail}
-                    />
-                    <TouchableOpacity
-                      style={styles.removeBtn}
-                      onPress={() => removeImage(index)}
-                    >
-                      <Text style={styles.removeText}>✕</Text>
-                    </TouchableOpacity>
-                  </View>
-                ))}
-              </View>
-            )}
+              {images.map((img, index) => (
+                <View key={index} style={styles.previewWrapper}>
+                  <Image
+                    source={{ uri: img.uri }}
+                    style={styles.previewImage}
+                  />
+                  <TouchableOpacity
+                    style={styles.removeBadge}
+                    onPress={() =>
+                      setImages(images.filter((_, i) => i !== index))
+                    }
+                  >
+                    <Text style={styles.removeText}>✕</Text>
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
 
-            {/* Video Preview */}
-            {video && (
-              <View style={styles.videoContainer}>
-                <Video
-                  source={{ uri: video.uri }}
-                  style={styles.videoPreview}
-                  useNativeControls
-                  resizeMode="contain"
-                />
-                <TouchableOpacity
-                  style={styles.removeBtn}
-                  onPress={removeVideo}
-                >
-                  <Text style={styles.removeText}>✕</Text>
+            <Text style={styles.label}>วิดีโอ (ถ้ามี)</Text>
+            {video ? (
+              <View style={styles.videoStatusBox}>
+                <Text style={styles.videoStatusText}>✅ เลือกวิดีโอแล้ว</Text>
+                <TouchableOpacity onPress={() => setVideo(null)}>
+                  <Text style={styles.deleteLink}>ลบวิดีโอ</Text>
                 </TouchableOpacity>
               </View>
+            ) : (
+              <TouchableOpacity style={styles.videoPicker} onPress={pickVideo}>
+                <Text style={styles.videoPickerText}>
+                  🎥 เพิ่มวิดีโอแนะนำตัวน้อง
+                </Text>
+              </TouchableOpacity>
             )}
-
-            {/* Media Buttons */}
-            <View style={styles.mediaBtnContainer}>
-              <TouchableOpacity
-                style={[
-                  styles.mediaBtn,
-                  images.length >= 5 && styles.mediaBtnDisabled,
-                ]}
-                onPress={pickImages}
-                disabled={images.length >= 5}
-              >
-                <Text style={styles.mediaBtnText}>
-                  📸 เพิ่มรูป ({images.length}/5)
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.mediaBtn, video && styles.mediaBtnDisabled]}
-                onPress={pickVideo}
-                disabled={!!video}
-              >
-                <Text style={styles.mediaBtnText}>
-                  🎥 เพิ่มวิดีโอ ({video ? "1" : "0"}/1)
-                </Text>
-              </TouchableOpacity>
-            </View>
           </View>
 
-          {/* Pet Name */}
-          <View style={styles.section}>
-            <Text style={styles.label}>
-              ชื่อ <Text style={styles.required}>*</Text>
-            </Text>
+          {/* Base Information Section */}
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>ข้อมูลทั่วไป</Text>
+
+            <Text style={styles.label}>ประเภท *</Text>
+            <View style={styles.choiceRow}>
+              {["สุนัข", "แมว"].map((cat) => (
+                <TouchableOpacity
+                  key={cat}
+                  style={[
+                    styles.choiceBtn,
+                    category === cat && styles.categoryActive,
+                  ]}
+                  onPress={() => setCategory(cat)}
+                >
+                  <Text
+                    style={[
+                      styles.choiceText,
+                      category === cat && styles.choiceTextActive,
+                    ]}
+                  >
+                    {cat === "สุนัข" ? "🐶 สุนัข" : "🐱 แมว"}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
             <TextInput
-              placeholder="ชื่อของน้องสัตว์"
               style={styles.input}
+              placeholder="ชื่อน้อง"
               value={petName}
               onChangeText={setPetName}
-              placeholderTextColor="#9CA3AF"
             />
-          </View>
 
-          {/* Category */}
-          <View style={styles.section}>
-            <Text style={styles.label}>
-              ประเภท <Text style={styles.required}>*</Text>
-            </Text>
-            <View style={styles.categoryContainer}>
-              <CategoryButton icon="🐕" label="สุนัข" value="Dog" />
-              <CategoryButton icon="🐈" label="แมว" value="Cat" />
-            </View>
-          </View>
-
-          {/* Sex */}
-          <View style={styles.section}>
-            <Text style={styles.label}>
-              เพศ <Text style={styles.required}>*</Text>
-            </Text>
-            <View style={styles.sexContainer}>
-              <SexButton label="ผู้" value="Male" />
-              <SexButton label="เมีย" value="Female" />
-            </View>
-          </View>
-
-          {/* Breed */}
-          <View style={styles.section}>
-            <Text style={styles.label}>
-              สายพันธุ์ <Text style={styles.required}>*</Text>
-            </Text>
             <TextInput
-              placeholder="เช่น โกลเด้น รีทรีฟเวอร์, เปอร์เซีย, ผสม"
               style={styles.input}
+              placeholder="สายพันธุ์ (เช่น พันธุ์ทาง, ชิบะ)"
               value={breed}
               onChangeText={setBreed}
-              placeholderTextColor="#9CA3AF"
             />
-          </View>
 
-          {/* Age and Weight */}
-          <View style={styles.row}>
-            <View style={[styles.section, { flex: 1, marginRight: 8 }]}>
-              <Text style={styles.label}>
-                อายุ (ปี) <Text style={styles.required}>*</Text>
-              </Text>
-              <TextInput
-                placeholder="0"
-                style={styles.input}
-                value={age}
-                onChangeText={setAge}
-                keyboardType="number-pad"
-                placeholderTextColor="#9CA3AF"
-              />
+            <View style={styles.row}>
+              <View style={{ flex: 1, marginRight: 10 }}>
+                <Text style={styles.label}>อายุ (ปี)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="0"
+                  keyboardType="numeric"
+                  value={age}
+                  onChangeText={setAge}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.label}>น้ำหนัก (กก.)</Text>
+                <TextInput
+                  style={styles.input}
+                  placeholder="0.0"
+                  keyboardType="numeric"
+                  value={weight}
+                  onChangeText={setWeight}
+                />
+              </View>
             </View>
-            <View style={[styles.section, { flex: 1, marginLeft: 8 }]}>
-              <Text style={styles.label}>น้ำหนัก (kg)</Text>
-              <TextInput
-                placeholder="0.0"
-                style={styles.input}
-                value={weight}
-                onChangeText={setWeight}
-                keyboardType="decimal-pad"
-                placeholderTextColor="#9CA3AF"
-              />
-            </View>
-          </View>
 
-          {/* Personality */}
-          <View style={styles.section}>
-            <Text style={styles.label}>
-              ลักษณะนิสัย <Text style={styles.required}>*</Text>
-            </Text>
-            <TextInput
-              placeholder="เช่น ขี้เล่น ชอบคน เข้ากับเด็กได้ดี เป็นมิตร"
-              style={[styles.input, styles.textArea]}
-              multiline
-              numberOfLines={3}
-              value={personality}
-              onChangeText={setPersonality}
-              placeholderTextColor="#9CA3AF"
-              textAlignVertical="top"
-            />
-          </View>
-
-          {/* Vaccine History */}
-          <View style={styles.section}>
-            <Text style={styles.label}>ประวัติวัคซีนที่ฉีด</Text>
-            <TextInput
-              placeholder="เช่น วัคซีนป้องกันโรคพิษสุนัขบ้า, 7 in 1, ครบตามเวลา"
-              style={[styles.input, styles.textArea]}
-              multiline
-              numberOfLines={3}
-              value={vaccineHistory}
-              onChangeText={setVaccineHistory}
-              placeholderTextColor="#9CA3AF"
-              textAlignVertical="top"
-            />
-          </View>
-
-          {/* Neutered Status */}
-          <View style={styles.section}>
-            <Text style={styles.label}>ทำหมัน</Text>
-            <View style={styles.sexContainer}>
-              <NeuteredButton label="ทำหมันแล้ว" value="Yes" />
-              <NeuteredButton label="ยังไม่ทำหมัน" value="No" />
+            <Text style={styles.label}>เพศ *</Text>
+            <View style={styles.choiceRow}>
+              {["ผู้", "เมีย"].map((s) => (
+                <TouchableOpacity
+                  key={s}
+                  style={[styles.choiceBtn, sex === s && styles.sexActive]}
+                  onPress={() => setSex(s)}
+                >
+                  <Text
+                    style={[
+                      styles.choiceText,
+                      sex === s && styles.choiceTextActive,
+                    ]}
+                  >
+                    {s === "ผู้" ? "♂️ ตัวผู้" : "♀️ ตัวเมีย"}
+                  </Text>
+                </TouchableOpacity>
+              ))}
             </View>
           </View>
 
-          {/* Address */}
-          <View style={styles.section}>
-            <Text style={styles.label}>
-              สถานที่ตั้ง <Text style={styles.required}>*</Text>
-            </Text>
+          {/* Health & Detail Section */}
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>สุขภาพและสถานที่</Text>
             <TextInput
-              placeholder="เช่น กรุงเทพมหานคร, เชียงใหม่"
               style={styles.input}
+              placeholder="สถานที่ (เช่น เขต, จังหวัด)"
               value={address}
               onChangeText={setAddress}
-              placeholderTextColor="#9CA3AF"
             />
-          </View>
+            <TextInput
+              style={styles.input}
+              placeholder="ประวัติการได้รับวัคซีน"
+              value={vaccineHistory}
+              onChangeText={setVaccineHistory}
+            />
 
-          {/* Post Status */}
-          <View style={styles.section}>
-            <Text style={styles.label}>สถานะการโพสต์</Text>
-            <View style={styles.statusContainer}>
-              <StatusButton
-                label="🟢 พร้อมหาบ้าน"
-                value="Available"
-                color="#10B981"
-              />
-              <StatusButton
-                label="🟡 รอพิจารณา"
-                value="Pending"
-                color="#F59E0B"
-              />
-              <StatusButton
-                label="🔴 หาบ้านแล้ว"
-                value="Adopted"
-                color="#EF4444"
-              />
+            <Text style={styles.label}>การทำหมัน</Text>
+            <View style={styles.choiceRow}>
+              {["ทำแล้ว", "ยังไม่ได้ทำ"].map((item) => (
+                <TouchableOpacity
+                  key={item}
+                  style={[
+                    styles.choiceBtn,
+                    isNeutered === item && styles.sexActive,
+                  ]}
+                  onPress={() => setIsNeutered(item)}
+                >
+                  <Text
+                    style={[
+                      styles.choiceText,
+                      isNeutered === item && styles.choiceTextActive,
+                    ]}
+                  >
+                    {item}
+                  </Text>
+                </TouchableOpacity>
+              ))}
             </View>
           </View>
 
-          {/* Description */}
-          <View style={styles.section}>
-            <Text style={styles.label}>
-              รายละเอียดเพิ่มเติม <Text style={styles.required}>*</Text>
-            </Text>
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>เกี่ยวกับน้อง</Text>
             <TextInput
-              placeholder="บอกเล่าเพิ่มเติมเกี่ยวกับน้องสัตว์ของคุณ เช่น สุขภาพ พฤติกรรม หรือข้อกำหนดพิเศษ..."
-              style={[styles.input, styles.textAreaLarge]}
+              style={[styles.input, styles.textArea]}
+              placeholder="ลักษณะนิสัย (เช่น เข้ากับแมวตัวอื่นได้ง่าย)"
               multiline
-              numberOfLines={4}
-              value={desc}
-              onChangeText={setDesc}
-              placeholderTextColor="#9CA3AF"
-              textAlignVertical="top"
+              value={personality}
+              onChangeText={setPersonality}
+            />
+            <TextInput
+              style={[styles.input, styles.textArea]}
+              placeholder="รายละเอียดอื่นๆ หรือประวัติความเป็นมาของน้อง"
+              multiline
+              value={about}
+              onChangeText={setAbout}
             />
           </View>
 
           {/* Submit Button */}
           <TouchableOpacity
-            style={[styles.submitBtn, uploading && styles.submitBtnDisabled]}
+            style={[styles.submitBtn, uploading && { opacity: 0.7 }]}
             onPress={submitPet}
             disabled={uploading}
-            activeOpacity={0.8}
           >
-            <Text style={styles.submitText}>
-              {uploading ? "กำลังอัพโหลด..." : "บันทึกข้อมูล"}
-            </Text>
+            {uploading ? (
+              <ActivityIndicator color="#FFF" />
+            ) : (
+              <Text style={styles.submitText}>ลงประกาศหาบ้าน 🐾</Text>
+            )}
           </TouchableOpacity>
 
-          <View style={{ height: 30 }} />
-        </View>
-      </ScrollView>
+          <View style={{ height: 50 }} />
+        </ScrollView>
+      </KeyboardAvoidingView>
     </AuthWrapper>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#F9FAFB",
-    paddingTop: 30,
+  container: { flex: 1, backgroundColor: "#F8F9FB", paddingHorizontal: 20 },
+  header: { marginTop: 30, marginBottom: 20 },
+  title: { fontSize: 28, fontWeight: "800", color: "#1F2937" },
+  subtitle: { fontSize: 14, color: "#6B7280", marginTop: 4 },
+  card: {
+    backgroundColor: "#FFF",
+    borderRadius: 20,
+    padding: 16,
+    marginBottom: 16,
+    elevation: 3,
+    shadowColor: "#000",
+    shadowOpacity: 0.05,
+    shadowRadius: 10,
   },
-  content: {
-    padding: 20,
-  },
-  header: {
-    marginBottom: 24,
-  },
-  title: {
-    fontSize: 28,
+  sectionTitle: {
+    fontSize: 18,
     fontWeight: "700",
-    color: "#111827",
-    marginBottom: 4,
-  },
-  subtitle: {
-    fontSize: 15,
-    color: "#6B7280",
-  },
-  section: {
-    marginBottom: 20,
+    color: "#374151",
+    marginBottom: 15,
   },
   label: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#374151",
-    marginBottom: 8,
-  },
-  required: {
-    color: "#EF4444",
-  },
-  helperText: {
-    fontSize: 13,
-    color: "#6B7280",
-    marginBottom: 12,
-  },
-  mediaGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 10,
-    marginBottom: 12,
-  },
-  mediaItem: {
-    width: "48%",
-    height: 120,
-    borderRadius: 12,
-    overflow: "hidden",
-    position: "relative",
-  },
-  mediaThumbnail: {
-    width: "100%",
-    height: "100%",
-  },
-  videoContainer: {
-    width: "100%",
-    height: 200,
-    borderRadius: 12,
-    overflow: "hidden",
-    marginBottom: 12,
-    position: "relative",
-  },
-  videoPreview: {
-    width: "100%",
-    height: "100%",
-  },
-  removeBtn: {
-    position: "absolute",
-    top: 8,
-    right: 8,
-    backgroundColor: "#EF4444",
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  removeText: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "bold",
-  },
-  mediaBtnContainer: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  mediaBtn: {
-    flex: 1,
-    backgroundColor: "#8B5CF6",
-    paddingVertical: 12,
-    borderRadius: 12,
-    alignItems: "center",
-  },
-  mediaBtnDisabled: {
-    backgroundColor: "#D1D5DB",
-  },
-  mediaBtnText: {
-    color: "#FFFFFF",
     fontSize: 14,
     fontWeight: "600",
+    color: "#4B5563",
+    marginBottom: 10,
+    marginTop: 5,
   },
   input: {
-    backgroundColor: "#FFFFFF",
-    padding: 14,
+    backgroundColor: "#F9FAFB",
     borderRadius: 12,
+    padding: 14,
     fontSize: 16,
-    color: "#111827",
+    color: "#1F2937",
+    marginBottom: 12,
     borderWidth: 1,
     borderColor: "#E5E7EB",
   },
-  textArea: {
+  textArea: { height: 90, textAlignVertical: "top" },
+  row: { flexDirection: "row" },
+  mediaRow: { flexDirection: "row", marginBottom: 15 },
+  addMediaBox: {
+    width: 80,
     height: 80,
-    paddingTop: 14,
-  },
-  textAreaLarge: {
-    height: 120,
-    paddingTop: 14,
-  },
-  categoryContainer: {
-    flexDirection: "row",
-    gap: 10,
-  },
-  categoryBtn: {
-    flex: 1,
-    backgroundColor: "#FFFFFF",
-    paddingVertical: 16,
-    paddingHorizontal: 8,
-    borderRadius: 12,
-    alignItems: "center",
-    borderWidth: 2,
-    borderColor: "#E5E7EB",
-  },
-  categoryBtnActive: {
     backgroundColor: "#EEF2FF",
-    borderColor: "#8B5CF6",
+    borderRadius: 15,
+    borderStyle: "dashed",
+    borderWidth: 2,
+    borderColor: "#6366F1",
+    justifyContent: "center",
+    alignItems: "center",
   },
-  categoryIcon: {
-    fontSize: 28,
-    marginBottom: 4,
+  plusIcon: { fontSize: 28, color: "#6366F1" },
+  addText: { fontSize: 12, color: "#6366F1", fontWeight: "600" },
+  previewWrapper: { marginLeft: 12, position: "relative" },
+  previewImage: { width: 80, height: 80, borderRadius: 15 },
+  removeBadge: {
+    position: "absolute",
+    top: -6,
+    right: -6,
+    backgroundColor: "#EF4444",
+    borderRadius: 10,
+    width: 22,
+    height: 22,
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "#FFF",
   },
-  categoryText: {
-    fontSize: 13,
-    color: "#6B7280",
-    fontWeight: "500",
+  removeText: { color: "#FFF", fontSize: 10, fontWeight: "bold" },
+  videoPicker: {
+    padding: 16,
+    borderRadius: 12,
+    backgroundColor: "#F0FDF4",
+    borderWidth: 1,
+    borderColor: "#22C55E",
+    borderStyle: "dashed",
+    alignItems: "center",
   },
-  categoryTextActive: {
-    color: "#8B5CF6",
-    fontWeight: "600",
-  },
-  row: {
+  videoPickerText: { color: "#166534", fontWeight: "600" },
+  videoStatusBox: {
     flexDirection: "row",
+    justifyContent: "space-between",
+    padding: 16,
+    backgroundColor: "#F0FDF4",
+    borderRadius: 12,
   },
-  sexContainer: {
-    flexDirection: "row",
-    gap: 12,
-  },
-  sexBtn: {
+  videoStatusText: { color: "#166534", fontWeight: "600" },
+  deleteLink: { color: "#EF4444", fontWeight: "700" },
+  choiceRow: { flexDirection: "row", marginBottom: 15 },
+  choiceBtn: {
     flex: 1,
-    backgroundColor: "#FFFFFF",
-    paddingVertical: 14,
+    padding: 14,
     borderRadius: 12,
+    backgroundColor: "#F3F4F6",
     alignItems: "center",
-    borderWidth: 2,
-    borderColor: "#E5E7EB",
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: "transparent",
   },
-  sexBtnActive: {
-    backgroundColor: "#EEF2FF",
-    borderColor: "#8B5CF6",
-  },
-  sexText: {
-    fontSize: 15,
-    color: "#6B7280",
-    fontWeight: "500",
-  },
-  sexTextActive: {
-    color: "#8B5CF6",
-    fontWeight: "600",
-  },
-  statusContainer: {
-    gap: 10,
-  },
-  statusBtn: {
-    backgroundColor: "#FFFFFF",
-    paddingVertical: 14,
-    borderRadius: 12,
-    alignItems: "center",
-    borderWidth: 2,
-    borderColor: "#E5E7EB",
-  },
-  statusBtnActive: {
-    backgroundColor: "#F9FAFB",
-  },
-  statusText: {
-    fontSize: 15,
-    color: "#6B7280",
-    fontWeight: "500",
-  },
-  statusTextActive: {
-    fontWeight: "600",
-  },
+  choiceText: { color: "#4B5563", fontWeight: "600" },
+  choiceTextActive: { color: "#FFF" },
+  categoryActive: { backgroundColor: "#F59E0B" }, // สีส้ม Amber สำหรับประเภท
+  sexActive: { backgroundColor: "#6366F1" }, // สี Indigo สำหรับเพศและอื่นๆ
   submitBtn: {
-    backgroundColor: "#8B5CF6",
-    paddingVertical: 16,
-    borderRadius: 12,
+    backgroundColor: "#6366F1",
+    padding: 18,
+    borderRadius: 16,
     alignItems: "center",
-    marginTop: 8,
-    shadowColor: "#8B5CF6",
-    shadowOffset: { width: 0, height: 4 },
+    marginTop: 10,
+    shadowColor: "#6366F1",
     shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
+    shadowRadius: 10,
+    elevation: 5,
   },
-  submitBtnDisabled: {
-    backgroundColor: "#D1D5DB",
-    shadowOpacity: 0,
-    elevation: 0,
-  },
-  submitText: {
-    color: "#FFFFFF",
-    fontSize: 17,
-    fontWeight: "700",
-  },
+  submitText: { color: "#FFF", fontSize: 18, fontWeight: "700" },
 });
