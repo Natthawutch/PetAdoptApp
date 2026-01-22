@@ -1,10 +1,18 @@
+// components/Header.jsx
+// ✅ Fix realtime “CLOSED บ่อย” ใน Header:
+// - ใช้ rtRef + removeChannel แทน unsubscribe
+// - เพิ่ม backoff reconnect เมื่อ CLOSED / TIMED_OUT / CHANNEL_ERROR
+// - reconnect ตอนกลับ foreground
+// - กัน setup ซ้ำถี่ ๆ
+
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Location from "expo-location";
 import { useRouter } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  AppState,
   Image,
   StyleSheet,
   Text,
@@ -15,6 +23,15 @@ import {
   createClerkSupabaseClient,
   getRealtimeClient,
 } from "../../config/supabaseClient";
+
+function clamp(n, min, max) {
+  return Math.max(min, Math.min(max, n));
+}
+
+function jitter(ms, pct = 0.2) {
+  const delta = ms * pct;
+  return Math.floor(ms - delta + Math.random() * (delta * 2));
+}
 
 export default function Header() {
   const { isSignedIn, getToken } = useAuth();
@@ -27,6 +44,49 @@ export default function Header() {
   const [locationText, setLocationText] = useState("กำลังตรวจสอบตำแหน่ง...");
 
   const channelRef = useRef(null);
+  const rtRef = useRef(null);
+
+  const reconnectTimerRef = useRef(null);
+  const retryAttemptRef = useRef(0);
+  const setupRealtimeRef = useRef(null);
+
+  const appStateRef = useRef(AppState.currentState);
+
+  const clearReconnectTimer = () => {
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+  };
+
+  const removeChannel = useCallback(async () => {
+    try {
+      if (rtRef.current && channelRef.current) {
+        await rtRef.current.removeChannel(channelRef.current);
+      }
+    } catch (e) {
+      console.log("Header removeChannel error:", e);
+    } finally {
+      channelRef.current = null;
+      rtRef.current = null;
+    }
+  }, []);
+
+  const scheduleReconnect = useCallback(
+    (reason = "unknown") => {
+      clearReconnectTimer();
+      retryAttemptRef.current += 1;
+
+      const attempt = retryAttemptRef.current;
+      const base = clamp(800 * Math.pow(1.8, attempt - 1), 800, 12000);
+      const waitMs = jitter(base, 0.25);
+
+      reconnectTimerRef.current = setTimeout(() => {
+        setupRealtimeRef.current?.({ force: true, reason });
+      }, waitMs);
+    },
+    [removeChannel],
+  );
 
   /* ========================= HELPER: GET CLERK TOKEN ========================= */
   const getClerkToken = async () => {
@@ -41,7 +101,6 @@ export default function Header() {
 
     const loadUser = async () => {
       try {
-        // ✅ ใช้ authenticated client
         const token = await getClerkToken();
         const supabase = createClerkSupabaseClient(token);
 
@@ -89,15 +148,13 @@ export default function Header() {
   }, [isLoaded, isSignedIn, clerkUser?.id]);
 
   /* ========================= UNREAD INBOX COUNT ========================= */
-  const loadInboxCount = async () => {
+  const loadInboxCount = useCallback(async () => {
     if (!user?.id) return;
 
     try {
-      // ✅ ใช้ authenticated client
       const token = await getClerkToken();
       const supabase = createClerkSupabaseClient(token);
 
-      // ✅ นับ unread messages ในแชทที่ user เป็น participant
       const { data: chats, error: chatsErr } = await supabase
         .from("chats")
         .select("id")
@@ -109,13 +166,11 @@ export default function Header() {
       }
 
       const chatIds = chats.map((c) => c.id);
-
       if (chatIds.length === 0) {
         setInboxCount(0);
         return;
       }
 
-      // นับแชทที่มี unread messages
       let unreadChats = 0;
 
       for (const chatId of chatIds) {
@@ -126,7 +181,7 @@ export default function Header() {
           .neq("sender_id", user.id)
           .eq("is_read", false);
 
-        if (count > 0) unreadChats++;
+        if ((count || 0) > 0) unreadChats++;
       }
 
       setInboxCount(unreadChats);
@@ -134,60 +189,83 @@ export default function Header() {
       console.error("loadInboxCount error:", err);
       setInboxCount(0);
     }
-  };
+  }, [user?.id]);
 
   useEffect(() => {
     if (user?.id) loadInboxCount();
-  }, [user?.id]);
+  }, [user?.id, loadInboxCount]);
 
-  /* ========================= REALTIME INBOX ========================= */
+  /* ========================= REALTIME INBOX (STABLE) ========================= */
   useEffect(() => {
     if (!user?.id) return;
 
-    const setupRealtime = async () => {
+    const setupRealtime = async ({ force = false, reason = "init" } = {}) => {
       try {
-        // ✅ ใช้ authenticated realtime client
+        // กัน setup ซ้ำ ถ้ามี channel แล้ว และไม่ได้ force
+        if (channelRef.current && !force) return;
+
         const token = await getClerkToken();
         const rt = getRealtimeClient(token);
+        rtRef.current = rt;
 
-        if (channelRef.current) {
-          await channelRef.current.unsubscribe();
-          channelRef.current = null;
-        }
+        await removeChannel();
 
         const channel = rt
           .channel(`header-inbox-${user.id}`)
           .on(
             "postgres_changes",
-            {
-              event: "*",
-              schema: "public",
-              table: "messages",
-            },
+            { event: "*", schema: "public", table: "messages" },
             () => {
-              console.log("📬 Header: message changed, reloading inbox count");
               loadInboxCount();
-            }
+            },
           )
           .subscribe((status) => {
             console.log("📬 Header realtime status:", status);
+
+            if (status === "SUBSCRIBED") {
+              retryAttemptRef.current = 0;
+              return;
+            }
+
+            if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+              scheduleReconnect(`status:${status}:${reason}`);
+              return;
+            }
+
+            if (status === "CLOSED") {
+              scheduleReconnect(`status:CLOSED:${reason}`);
+            }
           });
 
         channelRef.current = channel;
       } catch (err) {
-        console.error("setupRealtime error:", err);
+        console.error("Header setupRealtime error:", err);
+        scheduleReconnect(`exception:${reason}`);
       }
     };
 
-    setupRealtime();
+    setupRealtimeRef.current = setupRealtime;
+
+    // init
+    setupRealtime({ force: true, reason: "init" });
+
+    // reconnect ตอนกลับ foreground
+    const sub = AppState.addEventListener("change", (nextState) => {
+      const prev = appStateRef.current;
+      appStateRef.current = nextState;
+
+      if (prev.match(/inactive|background/) && nextState === "active") {
+        loadInboxCount();
+        setupRealtimeRef.current?.({ force: true, reason: "foreground" });
+      }
+    });
 
     return () => {
-      if (channelRef.current) {
-        channelRef.current.unsubscribe();
-        channelRef.current = null;
-      }
+      sub.remove();
+      clearReconnectTimer();
+      removeChannel();
     };
-  }, [user?.id]);
+  }, [user?.id, loadInboxCount, removeChannel, scheduleReconnect]);
 
   /* ========================= LOCATION ========================= */
   useEffect(() => {

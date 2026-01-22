@@ -34,6 +34,9 @@ export default function ReportDetail() {
   const [evidence, setEvidence] = useState([]); // [{ uri }]
   const [submitting, setSubmitting] = useState(false);
 
+  // ✅ กันกดรับเคสซ้ำ
+  const [accepting, setAccepting] = useState(false);
+
   useEffect(() => {
     loadReport();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -110,43 +113,78 @@ export default function ReportDetail() {
     );
   }, [report, currentUserId]);
 
+  /**
+   * ✅ Atomic Claim:
+   * update ... where id=? AND status='pending' AND assigned_volunteer_id IS NULL
+   * if 0 rows updated => someone already took it
+   */
   const handleAccept = async () => {
+    if (!report?.id) return;
+    if (!user?.id) {
+      Alert.alert("เกิดข้อผิดพลาด", "กรุณาเข้าสู่ระบบใหม่");
+      return;
+    }
+    if (accepting) return;
+
     Alert.alert("รับเคสนี้", "คุณต้องการรับผิดชอบเคสนี้หรือไม่?", [
       { text: "ยกเลิก", style: "cancel" },
       {
         text: "ยืนยัน",
         onPress: async () => {
           try {
-            const token = await getToken({ template: "supabase" });
+            setAccepting(true);
+
+            const token = await getToken({
+              template: "supabase",
+              skipCache: true,
+            });
             const supabase = createClerkSupabaseClient(token);
 
+            // current user uuid (users.id)
             const { data: currentUser, error: userErr } = await supabase
               .from("users")
               .select("id")
               .eq("clerk_id", user.id)
               .single();
 
-            if (userErr || !currentUser) {
+            if (userErr || !currentUser?.id) {
               Alert.alert("เกิดข้อผิดพลาด", "ไม่พบข้อมูลผู้ใช้");
               return;
             }
 
-            const { error } = await supabase
+            // ✅ atomic update (only if still pending + unassigned)
+            const { data: updatedRows, error: updErr } = await supabase
               .from("reports")
               .update({
                 status: "in_progress",
                 assigned_volunteer_id: currentUser.id,
               })
-              .eq("id", report.id);
+              .eq("id", report.id)
+              .eq("status", "pending")
+              .is("assigned_volunteer_id", null)
+              .select("id, status, assigned_volunteer_id")
+              .limit(1);
 
-            if (error) throw error;
+            if (updErr) throw updErr;
+
+            // ✅ no rows updated => already taken / status changed
+            if (!updatedRows || updatedRows.length === 0) {
+              Alert.alert(
+                "รับเคสไม่สำเร็จ",
+                "เคสนี้ถูกอาสาคนอื่นรับไปแล้ว หรือสถานะเปลี่ยนแปลง",
+              );
+              await loadReport();
+              return;
+            }
 
             Alert.alert("สำเร็จ", "คุณรับเคสนี้แล้ว");
             setEvidence([]);
-            loadReport();
+            await loadReport();
           } catch (e) {
             console.error("❌ Accept error:", e);
             Alert.alert("เกิดข้อผิดพลาด", "ไม่สามารถรับเคสได้");
+          } finally {
+            setAccepting(false);
           }
         },
       },
@@ -175,7 +213,7 @@ export default function ReportDetail() {
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsMultipleSelection: true,
       selectionLimit: 3,
-      quality: 0.5, // ✅ ลดขนาดรูป ลดโอกาสหลุด
+      quality: 0.5,
     });
 
     if (!result.canceled) {
@@ -192,7 +230,7 @@ export default function ReportDetail() {
     }
 
     const result = await ImagePicker.launchCameraAsync({
-      quality: 0.5, // ✅ ลดขนาดรูป ลดโอกาสหลุด
+      quality: 0.5,
     });
 
     if (!result.canceled) {
@@ -219,7 +257,6 @@ export default function ReportDetail() {
   };
 
   const base64ToUint8Array = (base64) => {
-    // ✅ แก้ไขใช้ atob แทน b64decode
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
     for (let i = 0; i < binary.length; i++) {
@@ -232,34 +269,24 @@ export default function ReportDetail() {
     const bucket = "report-evidence";
     const uploadedUrls = [];
 
-    // จำกัดจำนวนรูป กัน crash
     const items = evidenceArr.slice(0, 3);
 
     for (let i = 0; i < items.length; i++) {
       const uri = items[i].uri;
 
-      console.log("📤 Uploading:", uri);
-
-      // 1) เช็คไฟล์มีอยู่จริง
       const fileInfo = await FileSystem.getInfoAsync(uri);
-      if (!fileInfo.exists) {
-        throw new Error(`File not found: ${uri}`);
-      }
+      if (!fileInfo.exists) throw new Error(`File not found: ${uri}`);
 
-      // 2) อ่านไฟล์เป็น base64
       const base64 = await FileSystem.readAsStringAsync(uri, {
         encoding: FileSystem.EncodingType.Base64,
       });
 
       const ext = getExt(uri);
       const contentType = guessContentType(ext);
-
-      // 3) แปลง base64 → Uint8Array
       const bytes = base64ToUint8Array(base64);
 
       const path = `reports/${reportId}/${Date.now()}_${i}.${ext}`;
 
-      // 4) Upload เข้า Supabase Storage
       const { error: uploadError } = await supabase.storage
         .from(bucket)
         .upload(path, bytes, {
@@ -267,19 +294,13 @@ export default function ReportDetail() {
           upsert: false,
         });
 
-      if (uploadError) {
-        console.error("❌ Storage upload error:", uploadError);
-        throw uploadError;
-      }
+      if (uploadError) throw uploadError;
 
-      // 5) เอา public URL
       const { data: publicData } = supabase.storage
         .from(bucket)
         .getPublicUrl(path);
 
-      if (!publicData?.publicUrl) {
-        throw new Error("Cannot get public URL");
-      }
+      if (!publicData?.publicUrl) throw new Error("Cannot get public URL");
 
       uploadedUrls.push(publicData.publicUrl);
     }
@@ -304,7 +325,10 @@ export default function ReportDetail() {
         onPress: async () => {
           try {
             setSubmitting(true);
-            const token = await getToken({ template: "supabase" });
+            const token = await getToken({
+              template: "supabase",
+              skipCache: true,
+            });
             const supabase = createClerkSupabaseClient(token);
 
             const urls = await uploadEvidenceImages(
@@ -415,7 +439,6 @@ export default function ReportDetail() {
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      {/* Image Section */}
       {report.image_url ? (
         <Image source={{ uri: report.image_url }} style={styles.image} />
       ) : (
@@ -425,7 +448,6 @@ export default function ReportDetail() {
         </View>
       )}
 
-      {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerTop}>
           <View
@@ -486,7 +508,6 @@ export default function ReportDetail() {
         </View>
       </View>
 
-      {/* Info */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>ข้อมูลเพิ่มเติม</Text>
 
@@ -570,7 +591,6 @@ export default function ReportDetail() {
         )}
       </View>
 
-      {/* ✅ หลักฐานหลัง completed */}
       {report.status === "completed" &&
         Array.isArray(report.evidence_urls) &&
         report.evidence_urls.length > 0 && (
@@ -603,12 +623,22 @@ export default function ReportDetail() {
           </View>
         )}
 
-      {/* Action */}
       {canAccept && (
         <View style={styles.actionSection}>
-          <TouchableOpacity style={styles.acceptButton} onPress={handleAccept}>
-            <Ionicons name="checkmark-circle" size={20} color="#fff" />
-            <Text style={styles.acceptButtonText}>รับเคสนี้</Text>
+          <TouchableOpacity
+            style={[styles.acceptButton, accepting && { opacity: 0.75 }]}
+            onPress={handleAccept}
+            disabled={accepting}
+            activeOpacity={0.85}
+          >
+            {accepting ? (
+              <ActivityIndicator color="#fff" />
+            ) : (
+              <>
+                <Ionicons name="checkmark-circle" size={20} color="#fff" />
+                <Text style={styles.acceptButtonText}>รับเคสนี้</Text>
+              </>
+            )}
           </TouchableOpacity>
         </View>
       )}

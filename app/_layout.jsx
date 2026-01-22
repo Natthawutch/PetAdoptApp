@@ -41,8 +41,8 @@ export default function RootLayout() {
 
   return (
     <ClerkWrapper>
-      <AuthWrapper />
       <RealtimeBridge />
+      <AuthWrapper />
       <SyncPushToken />
       <StatusBar style="dark" />
       <Stack screenOptions={{ headerShown: false }}>

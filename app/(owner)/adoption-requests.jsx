@@ -1,13 +1,16 @@
+// app/AdoptionRequests/AdoptionRequests.jsx
+// (ไฟล์นี้ไม่มี realtime อยู่แล้ว จึงคงเดิม)
+
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { useEffect, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    FlatList,
-    RefreshControl,
-    StyleSheet,
-    Text,
-    View,
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  View,
 } from "react-native";
 import AdoptionRequestCard from "../../components/AdoptionRequestCard";
 import { createClerkSupabaseClient } from "../../config/supabaseClient";
@@ -23,10 +26,12 @@ export default function AdoptionRequests() {
 
   useEffect(() => {
     fetchRequests();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const fetchRequests = async () => {
     try {
+      setRefreshing(true);
       const token = await getToken({ template: "supabase" });
       const supabaseAuth = createClerkSupabaseClient(token);
 
@@ -43,7 +48,7 @@ export default function AdoptionRequests() {
             name,
             image_url
           )
-        `
+        `,
         )
         .eq("owner_id", user.id)
         .order("created_at", { ascending: false });
@@ -73,9 +78,8 @@ export default function AdoptionRequests() {
       if (error) throw error;
 
       Alert.alert(
-        status === "approved" ? "รับเลี้ยงสำเร็จ 🐶" : "ปฏิเสธคำขอแล้ว"
+        status === "approved" ? "รับเลี้ยงสำเร็จ 🐶" : "ปฏิเสธคำขอแล้ว",
       );
-
       fetchRequests();
     } catch (err) {
       console.error(err);
@@ -95,7 +99,7 @@ export default function AdoptionRequests() {
     <View style={styles.container}>
       <FlatList
         data={requests}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item) => String(item.id)}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={fetchRequests} />
         }
@@ -115,15 +119,8 @@ export default function AdoptionRequests() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#fff",
-    padding: 16,
-  },
-  center: {
-    flex: 1,
-    justifyContent: "center",
-  },
+  container: { flex: 1, backgroundColor: "#fff", padding: 16 },
+  center: { flex: 1, justifyContent: "center" },
   emptyText: {
     textAlign: "center",
     marginTop: 40,

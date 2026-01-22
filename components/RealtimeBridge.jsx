@@ -1,63 +1,78 @@
+// components/RealtimeBridge.jsx
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { useEffect, useRef } from "react";
 import { getRealtimeClient } from "../config/supabaseClient";
+import { realtimeBus, RT_EVENTS } from "../utils/realtimeBus";
 
 export default function RealtimeBridge() {
   const { user } = useUser();
   const { getToken } = useAuth();
 
+  const realtimeRef = useRef(null);
   const channelRef = useRef(null);
 
   useEffect(() => {
     let cancelled = false;
 
-    (async () => {
-      if (!user?.id) return;
+    const start = async () => {
+      try {
+        if (!user?.id) return;
 
-      const token = await getToken({ template: "supabase", skipCache: true });
-      const realtime = getRealtimeClient(token);
+        // ✅ token สด (ลดอาการ realtime หลุดเพราะ token เก่า)
+        const token = await getToken({ template: "supabase", skipCache: true });
+        if (!token || cancelled) return;
 
-      if (cancelled) return;
+        const realtime = getRealtimeClient(token);
+        realtimeRef.current = realtime;
 
-      // ปิด channel เก่าก่อน
-      if (channelRef.current) {
-        try {
-          await channelRef.current.unsubscribe();
-        } catch {}
-        channelRef.current = null;
+        // ✅ ถ้ามี channel เก่า -> ลบทิ้งก่อน
+        if (channelRef.current) {
+          try {
+            await realtime.removeChannel(channelRef.current);
+          } catch {}
+          channelRef.current = null;
+        }
+
+        // ✅ 1) adoption_requests ของ owner นี้
+        const adoptionChannel = realtime
+          .channel(`rt-adoption-${user.id}`)
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "adoption_requests",
+              filter: `owner_id=eq.${user.id}`,
+            },
+            (payload) => {
+              realtimeBus.emit(RT_EVENTS.ADOPTION_REQUESTS_CHANGED, payload);
+            },
+          )
+          .subscribe((status) => {
+            console.log("📡 adoption_requests realtime:", status);
+          });
+
+        channelRef.current = adoptionChannel;
+
+        // (ถ้าอยากเพิ่มตารางอื่นใน bridge นี้ เช่น reports/notifications
+        // ให้สร้างอีก channel หรือใช้ channel เดียวแล้ว on หลายอันก็ได้)
+      } catch (e) {
+        console.error("❌ RealtimeBridge start error:", e);
       }
+    };
 
-      channelRef.current = realtime
-        .channel(`adoption-requests-global-${user.id}`)
-        .on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "adoption_requests",
-            filter: `owner_id=eq.${user.id}`,
-          },
-          (payload) => {
-            // ยิง event กลางให้หน้าอื่นฟังได้
-            // เช่น ใช้ EventEmitter หรือ Zustand/Redux
-            // ตัวอย่างง่ายสุด: console.log
-            console.log("🔔 adoption_requests changed:", payload.eventType);
-          }
-        )
-        .subscribe((status) => {
-          console.log("📡 Global realtime:", status);
-        });
-    })();
+    start();
 
     return () => {
       cancelled = true;
       (async () => {
-        if (channelRef.current) {
-          try {
-            await channelRef.current.unsubscribe();
-          } catch {}
-          channelRef.current = null;
-        }
+        try {
+          if (realtimeRef.current && channelRef.current) {
+            await realtimeRef.current.removeChannel(channelRef.current);
+          }
+        } catch {}
+        channelRef.current = null;
+        realtimeRef.current = null;
       })();
     };
   }, [user?.id, getToken]);
