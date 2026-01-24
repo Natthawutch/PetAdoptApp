@@ -19,14 +19,25 @@ function TabIcon({ name, color, focused, badgeCount }) {
 }
 
 function AdminTabsLayout() {
-  // TODO: แนะนำให้ดึงจาก DB จริง เช่นจำนวน pending verifications
   const notificationCount = 0;
 
   return (
     <Tabs
       screenOptions={{
+        headerShown: false,
+        tabBarHideOnKeyboard: true,
+
+        // ✅ ทำให้ scene เต็มจอ (ช่วยเรื่อง scroll ใน tabs)
+        sceneContainerStyle: { flex: 1 },
+        contentStyle: { flex: 1 },
+
         tabBarActiveTintColor: "#6366f1",
         tabBarInactiveTintColor: "#94a3b8",
+
+        // ✅ กัน content โดน tabbar แบบ absolute บัง (ใช้ชั้นเดียวพอ)
+        // tabBar สูง 70 + safe area / padding รวม ๆ = 85
+        sceneStyle: { paddingBottom: 85 },
+
         tabBarStyle: {
           backgroundColor: "#ffffff",
           borderTopWidth: 0,
@@ -41,14 +52,18 @@ function AdminTabsLayout() {
           borderTopLeftRadius: 24,
           borderTopRightRadius: 24,
           position: "absolute",
+          left: 0,
+          right: 0,
+          bottom: 0,
         },
         tabBarLabelStyle: {
           fontSize: 11,
           fontWeight: "700",
           marginTop: 4,
         },
-        headerShown: false,
-        tabBarHideOnKeyboard: true,
+
+        // ✅ กันชน safe area ด้านล่าง
+        safeAreaInsets: { bottom: 8 },
       }}
     >
       <Tabs.Screen
@@ -100,7 +115,6 @@ function AdminTabsLayout() {
           title: "Verifications",
           tabBarIcon: ({ color, focused }) => (
             <TabIcon
-              // ✅ Ionicons ไม่มี "verifications" ให้ใช้ไอคอนที่ใกล้เคียง
               name={focused ? "shield-checkmark" : "shield-checkmark-outline"}
               color={color}
               focused={focused}
@@ -140,7 +154,6 @@ function AdminTabsLayout() {
   );
 }
 
-// ✅ Wrap ด้วย AdminGuard
 export default function AdminLayout() {
   return (
     <AdminGuard>

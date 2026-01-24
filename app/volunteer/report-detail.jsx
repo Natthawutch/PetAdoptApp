@@ -17,6 +17,10 @@ import {
 } from "react-native";
 import { createClerkSupabaseClient } from "../../config/supabaseClient";
 
+// ✅ safer base64 -> ArrayBuffer for RN
+import { decode } from "base64-arraybuffer";
+import * as Crypto from "expo-crypto";
+
 export default function ReportDetail() {
   const { id } = useLocalSearchParams();
   const router = useRouter();
@@ -69,7 +73,7 @@ export default function ReportDetail() {
       if (reportError) throw reportError;
       setReport(reportData);
 
-      // 2) reporter
+      // 2) reporter (reports.user_id เก็บ clerk_id เป็น text)
       if (reportData.user_id) {
         const { data: userData } = await supabase
           .from("users")
@@ -81,7 +85,7 @@ export default function ReportDetail() {
         setReporter(null);
       }
 
-      // 3) assigned volunteer
+      // 3) assigned volunteer (reports.assigned_volunteer_id เป็น uuid -> users.id)
       if (reportData.assigned_volunteer_id) {
         const { data: volunteerData } = await supabase
           .from("users")
@@ -105,7 +109,6 @@ export default function ReportDetail() {
   }, [report]);
 
   const canComplete = useMemo(() => {
-    // ✅ ปิดเคสได้เฉพาะอาสาที่รับผิดชอบเท่านั้น
     return (
       report?.status === "in_progress" &&
       !!currentUserId &&
@@ -152,7 +155,7 @@ export default function ReportDetail() {
               return;
             }
 
-            // ✅ atomic update (only if still pending + unassigned)
+            // ✅ FIX: remove .limit(1) to avoid PGRST109
             const { data: updatedRows, error: updErr } = await supabase
               .from("reports")
               .update({
@@ -162,8 +165,7 @@ export default function ReportDetail() {
               .eq("id", report.id)
               .eq("status", "pending")
               .is("assigned_volunteer_id", null)
-              .select("id, status, assigned_volunteer_id")
-              .limit(1);
+              .select("id, status, assigned_volunteer_id");
 
             if (updErr) throw updErr;
 
@@ -256,15 +258,6 @@ export default function ReportDetail() {
     return "image/jpeg";
   };
 
-  const base64ToUint8Array = (base64) => {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) {
-      bytes[i] = binary.charCodeAt(i);
-    }
-    return bytes;
-  };
-
   const uploadEvidenceImages = async (supabase, reportId, evidenceArr) => {
     const bucket = "report-evidence";
     const uploadedUrls = [];
@@ -283,13 +276,20 @@ export default function ReportDetail() {
 
       const ext = getExt(uri);
       const contentType = guessContentType(ext);
-      const bytes = base64ToUint8Array(base64);
 
-      const path = `reports/${reportId}/${Date.now()}_${i}.${ext}`;
+      // ✅ RN-safe conversion
+      const arrayBuffer = decode(base64);
+
+      // ✅ collision-safe filename
+      const rand = await Crypto.digestStringAsync(
+        Crypto.CryptoDigestAlgorithm.SHA256,
+        `${Date.now()}-${Math.random()}-${i}`,
+      );
+      const path = `reports/${reportId}/${rand.slice(0, 16)}_${i}.${ext}`;
 
       const { error: uploadError } = await supabase.storage
         .from(bucket)
-        .upload(path, bytes, {
+        .upload(path, arrayBuffer, {
           contentType,
           upsert: false,
         });
@@ -567,14 +567,15 @@ export default function ReportDetail() {
           </View>
         </View>
 
-        {report.assigned_volunteer_id && (
-          <View style={styles.infoCard}>
-            <View style={styles.infoIcon}>
-              <Ionicons name="checkmark-circle" size={24} color="#22c55e" />
-            </View>
-            <View style={styles.infoContent}>
-              <Text style={styles.infoLabel}>อาสาสมัครที่รับผิดชอบ</Text>
-              {volunteer ? (
+        {/* ✅ แสดงทั้งกรณีมี/ไม่มีคนรับ */}
+        <View style={styles.infoCard}>
+          <View style={styles.infoIcon}>
+            <Ionicons name="checkmark-circle" size={24} color="#22c55e" />
+          </View>
+          <View style={styles.infoContent}>
+            <Text style={styles.infoLabel}>อาสาสมัครที่รับผิดชอบ</Text>
+            {report.assigned_volunteer_id ? (
+              volunteer ? (
                 <>
                   <Text style={styles.infoValue}>
                     {volunteer.full_name || "ไม่ระบุชื่อ"}
@@ -585,10 +586,12 @@ export default function ReportDetail() {
                 <View style={{ paddingVertical: 8 }}>
                   <ActivityIndicator size="small" color="#22c55e" />
                 </View>
-              )}
-            </View>
+              )
+            ) : (
+              <Text style={styles.infoValue}>ยังไม่มีผู้รับผิดชอบ</Text>
+            )}
           </View>
-        )}
+        </View>
       </View>
 
       {report.status === "completed" &&

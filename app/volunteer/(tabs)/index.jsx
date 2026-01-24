@@ -1,14 +1,11 @@
 // app/volunteer/home/VolunteerHome.jsx
-// VolunteerHome.jsx - Stable Realtime + Reliable Sync (Full Code)
-// ✅ Fix realtime “ไม่นิ่ง”:
-// - ใช้ realtimeStatusRef กัน stale state ใน periodic tick
-// - แยก removeRealtimeChannel ออกจาก cleanupRealtime (ลด race/lock สั่น)
-// - connectRealtime ไม่ reset lock/counter กลางทาง
-// - periodic tick อ่านสถานะล่าสุดจาก ref
+// VolunteerHome.jsx - Stable Realtime + Reliable Sync (FULL)
+// ✅ Includes unread notifications badge that clears when read (via focus refresh)
+// ✅ Notifications schema assumed: notifications(user_id TEXT, unread BOOLEAN, created_at ...)
 
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -27,23 +24,37 @@ import {
 
 /* ----------------------------- Utils ----------------------------- */
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 function clamp(n, min, max) {
   return Math.max(min, Math.min(max, n));
 }
 
-function jitter(ms, pct = 0.2) {
+function jitter(ms, pct = 0.25) {
   const delta = ms * pct;
   return Math.floor(ms - delta + Math.random() * (delta * 2));
+}
+
+function isBadStatus(s) {
+  return (
+    s === "disconnected" ||
+    s === "CLOSED" ||
+    s === "TIMED_OUT" ||
+    s === "CHANNEL_ERROR"
+  );
 }
 
 /* --------------------------- Main Screen -------------------------- */
 
 export default function VolunteerHome() {
   const router = useRouter();
-  const { getToken } = useAuth();
-  const { user } = useUser();
+  const { getToken, isSignedIn } = useAuth();
+  const { user, isLoaded } = useUser();
+
+  const userId = user?.id; // ✅ Clerk id (string)
 
   const [urgentCount, setUrgentCount] = useState(0);
+  const [unreadCount, setUnreadCount] = useState(0);
 
   const [stats, setStats] = useState({
     totalCases: 0,
@@ -56,7 +67,10 @@ export default function VolunteerHome() {
   const [realtimeStatus, setRealtimeStatus] = useState("disconnected"); // disconnected | CONNECTING | SUBSCRIBED | ...
   const [lastSyncLabel, setLastSyncLabel] = useState("—");
 
-  // ✅ keep latest realtimeStatus (fix periodic reconnect bug)
+  // ✅ volunteer uuid in DB (users.id)
+  const [volunteerUuid, setVolunteerUuid] = useState(null);
+
+  // ✅ keep latest realtimeStatus
   const realtimeStatusRef = useRef("disconnected");
   useEffect(() => {
     realtimeStatusRef.current = realtimeStatus;
@@ -70,20 +84,23 @@ export default function VolunteerHome() {
   const appStateRef = useRef(AppState.currentState);
 
   // Realtime refs
-  const realtimeRef = useRef(null);
-  const channelRef = useRef(null);
+  const realtimeRef = useRef(null); // SupabaseClient
+  const channelRef = useRef(null); // RealtimeChannel
   const connectLockRef = useRef(false);
+  const connectInFlightRef = useRef(false);
+
+  // Retry
   const retryAttemptRef = useRef(0);
   const retryTimerRef = useRef(null);
 
   // Sync timers
-  const debounceTimerRef = useRef(null);
+  const urgentDebounceRef = useRef(null);
+  const statsDebounceRef = useRef(null);
+  const notifDebounceRef = useRef(null);
   const periodicSyncTimerRef = useRef(null);
 
   // access connectRealtime from timers without dependency loops
   const connectRealtimeRef = useRef(null);
-
-  const userId = user?.id;
 
   const formatTimeLabel = useCallback(() => {
     const now = new Date();
@@ -99,20 +116,27 @@ export default function VolunteerHome() {
     }
   }, []);
 
-  const getFreshToken = useCallback(async () => {
-    return await getToken({ template: "supabase", skipCache: true });
-  }, [getToken]);
+  /* -------------------------- Token helpers -------------------------- */
 
-  const getSupabase = useCallback(
-    async (fresh = false) => {
-      const token = fresh
-        ? await getFreshToken()
-        : await getToken({ template: "supabase" });
-      if (!token) return null;
-      return createClerkSupabaseClient(token);
-    },
-    [getToken, getFreshToken],
-  );
+  // ✅ token แบบทน: retry สั้น ๆ
+  const getClerkToken = useCallback(async () => {
+    if (!isLoaded || !isSignedIn) return null;
+
+    for (let i = 0; i < 6; i++) {
+      try {
+        const token = await getToken({ template: "supabase" });
+        if (token) return token;
+      } catch {}
+      await sleep(200 + i * 150);
+    }
+    return null;
+  }, [isLoaded, isSignedIn, getToken]);
+
+  const getSupabase = useCallback(async () => {
+    const token = await getClerkToken();
+    if (!token) return null;
+    return createClerkSupabaseClient(token);
+  }, [getClerkToken]);
 
   /* --------------------------- Data Fetch -------------------------- */
 
@@ -134,7 +158,7 @@ export default function VolunteerHome() {
 
   const fetchUrgentCount = useCallback(async () => {
     try {
-      const supabase = await getSupabase(false);
+      const supabase = await getSupabase();
       if (!supabase) return;
 
       const { count, error } = await supabase
@@ -152,18 +176,47 @@ export default function VolunteerHome() {
     }
   }, [getSupabase, formatTimeLabel]);
 
+  // ✅ Notifications unread count (matches your VolunteerNotifications table fields)
+  const fetchUnreadCount = useCallback(async () => {
+    try {
+      const supabase = await getSupabase();
+      if (!supabase) return;
+      if (!userId) return;
+
+      const { count, error } = await supabase
+        .from("notifications")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", userId) // ✅ Clerk user.id
+        .eq("unread", true); // ✅ unread boolean
+
+      if (error) throw error;
+      if (!mountedRef.current) return;
+
+      setUnreadCount(count || 0);
+      setLastSyncLabel(formatTimeLabel());
+    } catch (e) {
+      console.log("❌ fetchUnreadCount error:", e);
+    }
+  }, [getSupabase, userId, formatTimeLabel]);
+
   const fetchVolunteerStats = useCallback(async () => {
     try {
       if (!userId) return;
+
       setStatsLoading(true);
 
-      const supabase = await getSupabase(false);
+      const supabase = await getSupabase();
       if (!supabase) return;
 
-      const volunteerUuid = await resolveVolunteerUuid(supabase);
-      if (!volunteerUuid) {
-        console.log("❌ Cannot resolve volunteer uuid");
-        return;
+      // ensure volunteerUuid
+      let vu = volunteerUuid;
+      if (!vu) {
+        vu = await resolveVolunteerUuid(supabase);
+        if (!vu) {
+          console.log("❌ Cannot resolve volunteer uuid");
+          return;
+        }
+        if (mountedRef.current) setVolunteerUuid(vu);
       }
 
       const [{ count: completedCount }, { count: activeCount }] =
@@ -171,12 +224,12 @@ export default function VolunteerHome() {
           supabase
             .from("reports")
             .select("id", { count: "exact", head: true })
-            .eq("assigned_volunteer_id", volunteerUuid)
+            .eq("assigned_volunteer_id", vu)
             .eq("status", "completed"),
           supabase
             .from("reports")
             .select("id", { count: "exact", head: true })
-            .eq("assigned_volunteer_id", volunteerUuid)
+            .eq("assigned_volunteer_id", vu)
             .eq("status", "in_progress"),
         ]);
 
@@ -184,12 +237,11 @@ export default function VolunteerHome() {
       const { count: completed7dCount, error: c7Err } = await supabase
         .from("reports")
         .select("id", { count: "exact", head: true })
-        .eq("assigned_volunteer_id", volunteerUuid)
+        .eq("assigned_volunteer_id", vu)
         .eq("status", "completed")
         .gte("completed_at", from7dIso);
 
       if (c7Err) throw c7Err;
-
       if (!mountedRef.current) return;
 
       const completedCases = completedCount || 0;
@@ -209,50 +261,77 @@ export default function VolunteerHome() {
     } finally {
       if (mountedRef.current) setStatsLoading(false);
     }
-  }, [userId, getSupabase, resolveVolunteerUuid, formatTimeLabel]);
+  }, [
+    userId,
+    volunteerUuid,
+    getSupabase,
+    resolveVolunteerUuid,
+    formatTimeLabel,
+  ]);
 
-  const syncAll = useCallback(async () => {
-    await Promise.all([fetchUrgentCount(), fetchVolunteerStats()]);
-  }, [fetchUrgentCount, fetchVolunteerStats]);
+  /* ----------------------- Debounced sync split ---------------------- */
 
-  const scheduleDebouncedSync = useCallback(
-    (delay = 650) => {
-      clearTimer(debounceTimerRef);
-      debounceTimerRef.current = setTimeout(() => {
-        syncAll();
+  const scheduleDebouncedUrgent = useCallback(
+    (delay = 450) => {
+      clearTimer(urgentDebounceRef);
+      urgentDebounceRef.current = setTimeout(() => {
+        fetchUrgentCount();
       }, delay);
     },
-    [syncAll, clearTimer],
+    [clearTimer, fetchUrgentCount],
   );
+
+  const scheduleDebouncedStats = useCallback(
+    (delay = 750) => {
+      clearTimer(statsDebounceRef);
+      statsDebounceRef.current = setTimeout(() => {
+        fetchVolunteerStats();
+      }, delay);
+    },
+    [clearTimer, fetchVolunteerStats],
+  );
+
+  const scheduleDebouncedNotif = useCallback(
+    (delay = 550) => {
+      clearTimer(notifDebounceRef);
+      notifDebounceRef.current = setTimeout(() => {
+        fetchUnreadCount();
+      }, delay);
+    },
+    [clearTimer, fetchUnreadCount],
+  );
+
+  const syncAll = useCallback(async () => {
+    await Promise.all([
+      fetchUrgentCount(),
+      fetchVolunteerStats(),
+      fetchUnreadCount(),
+    ]);
+  }, [fetchUrgentCount, fetchVolunteerStats, fetchUnreadCount]);
 
   /* -------------------------- Realtime ----------------------------- */
 
-  // ✅ remove only channel/client (do NOT reset lock/counters here)
+  // ✅ remove only channel
   const removeRealtimeChannel = useCallback(async () => {
+    const rt = realtimeRef.current;
+    const ch = channelRef.current;
+
     try {
-      if (realtimeRef.current && channelRef.current) {
-        await realtimeRef.current.removeChannel(channelRef.current);
+      if (rt && ch) {
+        await rt.removeChannel(ch);
       }
     } catch (e) {
       console.log("removeRealtimeChannel error:", e);
     } finally {
       channelRef.current = null;
-      realtimeRef.current = null;
       if (mountedRef.current) setRealtimeStatus("disconnected");
     }
   }, []);
 
-  // ✅ full cleanup for unmount only
-  const cleanupRealtime = useCallback(async () => {
-    clearTimer(retryTimerRef);
-    retryAttemptRef.current = 0;
-    connectLockRef.current = false;
-    await removeRealtimeChannel();
-  }, [clearTimer, removeRealtimeChannel]);
-
   const scheduleReconnect = useCallback(
     (reason = "unknown") => {
       if (!mountedRef.current) return;
+      if (appStateRef.current !== "active") return;
 
       const attempt = retryAttemptRef.current + 1;
       retryAttemptRef.current = attempt;
@@ -274,34 +353,80 @@ export default function VolunteerHome() {
       try {
         if (!userId) return;
 
+        // ✅ กันซ้อน
+        if (connectInFlightRef.current) return;
         if (connectLockRef.current && !force) return;
+
         connectLockRef.current = true;
+        connectInFlightRef.current = true;
 
         setRealtimeStatus("CONNECTING");
 
-        // ปิดของเก่าก่อน (ไม่ reset lock/counter)
-        await removeRealtimeChannel();
+        // ✅ ถ้ามี channel เดิมอยู่ -> remove ก่อน
+        if (channelRef.current) {
+          await removeRealtimeChannel();
+        }
 
-        const token = await getFreshToken();
+        const token = await getClerkToken();
         if (!token) {
           setRealtimeStatus("disconnected");
           connectLockRef.current = false;
+          connectInFlightRef.current = false;
+          scheduleReconnect("no_token");
           return;
         }
 
-        const realtime = getRealtimeClient(token);
-        realtimeRef.current = realtime;
+        const rtClient = getRealtimeClient(token);
+        realtimeRef.current = rtClient;
 
-        const channel = realtime.channel(`vh-reports-${userId}`, {
+        const channel = rtClient.channel(`vh-${userId}`, {
           config: { broadcast: { self: false } },
         });
 
+        // ✅ Listener A: pending reports => urgentCount
         channel.on(
           "postgres_changes",
-          { event: "*", schema: "public", table: "reports" },
+          {
+            event: "*",
+            schema: "public",
+            table: "reports",
+            filter: "status=eq.pending",
+          },
           () => {
             if (!mountedRef.current) return;
-            scheduleDebouncedSync(650);
+            scheduleDebouncedUrgent(400);
+          },
+        );
+
+        // ✅ Listener B: assigned to me => stats
+        if (volunteerUuid) {
+          channel.on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "reports",
+              filter: `assigned_volunteer_id=eq.${volunteerUuid}`,
+            },
+            () => {
+              if (!mountedRef.current) return;
+              scheduleDebouncedStats(650);
+            },
+          );
+        }
+
+        // ✅ Listener C: my notifications => unreadCount
+        channel.on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "notifications",
+            filter: `user_id=eq.${userId}`, // ✅ Clerk id
+          },
+          () => {
+            if (!mountedRef.current) return;
+            scheduleDebouncedNotif(450);
           },
         );
 
@@ -313,19 +438,24 @@ export default function VolunteerHome() {
           if (status === "SUBSCRIBED") {
             retryAttemptRef.current = 0;
             connectLockRef.current = false;
-            scheduleDebouncedSync(250);
+            connectInFlightRef.current = false;
+
+            // initial quick sync after subscribe
+            scheduleDebouncedUrgent(250);
+            if (volunteerUuid) scheduleDebouncedStats(350);
+            scheduleDebouncedNotif(300);
             return;
           }
 
-          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          if (
+            status === "CHANNEL_ERROR" ||
+            status === "TIMED_OUT" ||
+            status === "CLOSED"
+          ) {
             connectLockRef.current = false;
+            connectInFlightRef.current = false;
+            channelRef.current = null;
             scheduleReconnect(`status:${status}:${reason}`);
-            return;
-          }
-
-          if (status === "CLOSED") {
-            connectLockRef.current = false;
-            scheduleReconnect(`status:CLOSED:${reason}`);
           }
         });
 
@@ -333,16 +463,21 @@ export default function VolunteerHome() {
       } catch (e) {
         console.log("❌ connectRealtime error:", e);
         connectLockRef.current = false;
+        connectInFlightRef.current = false;
+        channelRef.current = null;
         setRealtimeStatus("disconnected");
         scheduleReconnect(`exception:${reason}`);
       }
     },
     [
       userId,
+      volunteerUuid,
       removeRealtimeChannel,
-      getFreshToken,
-      scheduleDebouncedSync,
+      getClerkToken,
       scheduleReconnect,
+      scheduleDebouncedUrgent,
+      scheduleDebouncedStats,
+      scheduleDebouncedNotif,
     ],
   );
 
@@ -350,7 +485,7 @@ export default function VolunteerHome() {
     connectRealtimeRef.current = connectRealtime;
   }, [connectRealtime]);
 
-  /* --------------------- AppState + Periodic Sync ------------------ */
+  /* --------------------- Init + Periodic Sync ------------------ */
 
   useEffect(() => {
     mountedRef.current = true;
@@ -358,7 +493,20 @@ export default function VolunteerHome() {
     const init = async () => {
       if (!userId) return;
 
-      await syncAll();
+      // initial fetch
+      await fetchUrgentCount();
+      await fetchUnreadCount();
+
+      // resolve volunteerUuid first (so assigned filter works)
+      const supabase = await getSupabase();
+      if (supabase) {
+        const vu = await resolveVolunteerUuid(supabase);
+        if (vu && mountedRef.current) {
+          setVolunteerUuid(vu);
+        }
+      }
+
+      await fetchVolunteerStats();
       await connectRealtimeRef.current?.({ force: true, reason: "init" });
 
       clearTimer(periodicSyncTimerRef);
@@ -368,27 +516,43 @@ export default function VolunteerHome() {
 
         await syncAll();
 
-        // ✅ use ref (latest status)
-        if (realtimeStatusRef.current !== "SUBSCRIBED") {
+        // reconnect เฉพาะตอนหลุดจริง
+        const s = realtimeStatusRef.current;
+        if (isBadStatus(s)) {
           connectRealtimeRef.current?.({ force: true, reason: "periodic" });
         }
 
-        periodicSyncTimerRef.current = setTimeout(tick, 35000);
+        periodicSyncTimerRef.current = setTimeout(tick, 60000); // 60s
       };
 
-      periodicSyncTimerRef.current = setTimeout(tick, 35000);
+      periodicSyncTimerRef.current = setTimeout(tick, 60000);
     };
 
     init();
 
     return () => {
       mountedRef.current = false;
-      clearTimer(debounceTimerRef);
+      clearTimer(urgentDebounceRef);
+      clearTimer(statsDebounceRef);
+      clearTimer(notifDebounceRef);
       clearTimer(periodicSyncTimerRef);
-      cleanupRealtime();
+      clearTimer(retryTimerRef);
+      removeRealtimeChannel();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
+
+  // ถ้า volunteerUuid เพิ่งถูก resolve ทีหลัง ให้ reconnect เพื่อเพิ่ม listener assigned_to_me
+  useEffect(() => {
+    if (!userId) return;
+    if (!volunteerUuid) return;
+
+    if (realtimeStatusRef.current === "SUBSCRIBED") {
+      connectRealtimeRef.current?.({ force: true, reason: "uuid_ready" });
+    }
+  }, [userId, volunteerUuid]);
+
+  /* --------------------- Foreground reconnect ------------------ */
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (nextState) => {
@@ -397,6 +561,11 @@ export default function VolunteerHome() {
 
       if (prev.match(/inactive|background/) && nextState === "active") {
         syncAll();
+
+        try {
+          realtimeRef.current?.realtime?.connect?.();
+        } catch {}
+
         if (realtimeStatusRef.current !== "SUBSCRIBED") {
           connectRealtimeRef.current?.({ force: true, reason: "foreground" });
         }
@@ -405,6 +574,16 @@ export default function VolunteerHome() {
 
     return () => sub.remove();
   }, [syncAll]);
+
+  // ✅ IMPORTANT: when returning from Notifications screen, re-fetch unreadCount
+  useFocusEffect(
+    useCallback(() => {
+      fetchUnreadCount();
+      // optional: also refresh urgent + stats
+      // fetchUrgentCount();
+      return () => {};
+    }, [fetchUnreadCount]),
+  );
 
   /* --------------------------- Animation --------------------------- */
 
@@ -432,6 +611,8 @@ export default function VolunteerHome() {
   /* ----------------------------- UI -------------------------------- */
 
   const goReports = () => router.push("/volunteer/reports");
+  const goGuide = () => router.push("/volunteer/guide");
+  const goNotifications = () => router.push("/volunteer/notifications");
   const live = realtimeStatus === "SUBSCRIBED";
 
   return (
@@ -469,19 +650,20 @@ export default function VolunteerHome() {
           <TouchableOpacity
             style={styles.notifBtn}
             activeOpacity={0.85}
-            onPress={() => router.push("/volunteer/notifications")}
+            onPress={goNotifications}
           >
             <Ionicons name="notifications-outline" size={22} color="#0f172a" />
-            {urgentCount > 0 && (
+            {unreadCount > 0 && (
               <View style={styles.notifBadge}>
                 <Text style={styles.notifBadgeText}>
-                  {urgentCount > 99 ? "99+" : urgentCount}
+                  {unreadCount > 99 ? "99+" : unreadCount}
                 </Text>
               </View>
             )}
           </TouchableOpacity>
         </View>
 
+        {/* Primary: Reports */}
         <TouchableOpacity
           style={[
             styles.primaryCard,
@@ -526,32 +708,33 @@ export default function VolunteerHome() {
           </View>
         </TouchableOpacity>
 
-        <View style={styles.toolsRow}>
-          <ToolChip
-            icon="map-outline"
-            label="แผนที่"
-            onPress={() => router.push("/volunteer/map")}
-            tone="blue"
-          />
-          <ToolChip
-            icon="call-outline"
-            label="ฉุกเฉิน"
-            onPress={() => router.push("/volunteer/emergency")}
-            tone="pink"
-          />
-          <ToolChip
-            icon="document-text-outline"
-            label="คู่มือ"
-            onPress={() => router.push("/volunteer/guide")}
-            tone="teal"
-          />
-          <ToolChip
-            icon="settings-outline"
-            label="ตั้งค่า"
-            onPress={() => router.push("/volunteer/settings")}
-            tone="orange"
-          />
-        </View>
+        {/* Guide: same primary style */}
+        <TouchableOpacity
+          style={[styles.primaryCard, styles.primaryCalm, styles.guideCard]}
+          onPress={goGuide}
+          activeOpacity={0.9}
+        >
+          <View style={styles.primaryLeft}>
+            <View style={[styles.primaryIcon, styles.iconCalm]}>
+              <Ionicons
+                name="document-text-outline"
+                size={22}
+                color="#0ea5e9"
+              />
+            </View>
+
+            <View style={{ flex: 1 }}>
+              <Text style={styles.primaryTitle}>คู่มืออาสาสมัคร</Text>
+              <Text style={styles.primaryDesc}>
+                วิธีรับเคส • ขั้นตอนช่วยเหลือ • ข้อควรระวัง
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.primaryRight}>
+            <Ionicons name="chevron-forward" size={20} color="#0f172a" />
+          </View>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.section}>
@@ -609,22 +792,6 @@ export default function VolunteerHome() {
 
 /* ---------------------------- Components --------------------------- */
 
-function ToolChip({ icon, label, onPress, tone = "blue" }) {
-  const toneStyle = toolTones[tone] || toolTones.blue;
-  return (
-    <TouchableOpacity
-      style={[styles.toolChip, toneStyle.bg]}
-      onPress={onPress}
-      activeOpacity={0.85}
-    >
-      <View style={[styles.toolIconWrap, toneStyle.iconBg]}>
-        <Ionicons name={icon} size={18} color={toneStyle.iconColor} />
-      </View>
-      <Text style={styles.toolLabel}>{label}</Text>
-    </TouchableOpacity>
-  );
-}
-
 function StatTile({ icon, title, value, unit, tone = "green" }) {
   const t = statTones[tone] || statTones.green;
   return (
@@ -647,29 +814,6 @@ const statTones = {
   amber: { bg: { backgroundColor: "#fef3c7" }, color: "#d97706" },
   blue: { bg: { backgroundColor: "#dbeafe" }, color: "#2563eb" },
   pink: { bg: { backgroundColor: "#fce7f3" }, color: "#db2777" },
-};
-
-const toolTones = {
-  blue: {
-    bg: { backgroundColor: "#ffffff" },
-    iconBg: { backgroundColor: "#dbeafe" },
-    iconColor: "#2563eb",
-  },
-  pink: {
-    bg: { backgroundColor: "#ffffff" },
-    iconBg: { backgroundColor: "#fce7f3" },
-    iconColor: "#db2777",
-  },
-  teal: {
-    bg: { backgroundColor: "#ffffff" },
-    iconBg: { backgroundColor: "#ccfbf1" },
-    iconColor: "#0f766e",
-  },
-  orange: {
-    bg: { backgroundColor: "#ffffff" },
-    iconBg: { backgroundColor: "#fed7aa" },
-    iconColor: "#ea580c",
-  },
 };
 
 /* ------------------------------ Styles ----------------------------- */
@@ -791,26 +935,7 @@ const styles = StyleSheet.create({
   },
   countPillText: { color: "#fff", fontWeight: "800", fontSize: 13 },
 
-  toolsRow: { marginTop: 14, flexDirection: "row", gap: 10 },
-  toolChip: {
-    flex: 1,
-    borderRadius: 16,
-    paddingVertical: 12,
-    paddingHorizontal: 10,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: "#e2e8f0",
-  },
-  toolIconWrap: {
-    width: 36,
-    height: 36,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    marginBottom: 6,
-  },
-  toolLabel: { fontSize: 12, fontWeight: "700", color: "#334155" },
+  guideCard: { marginTop: 12 },
 
   section: { paddingHorizontal: 20, marginTop: 14 },
   sectionHeader: {

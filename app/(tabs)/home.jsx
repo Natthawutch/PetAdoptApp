@@ -1,8 +1,9 @@
-import { useUser } from "@clerk/clerk-expo";
+import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+  Alert,
   FlatList,
   Image,
   Modal,
@@ -10,14 +11,19 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
 import Header from "../../components/Home/header";
-import { supabase } from "../../config/supabaseClient";
+import {
+  createClerkSupabaseClient,
+  supabase,
+} from "../../config/supabaseClient";
 
 export default function Home() {
   const { user } = useUser();
+  const { getToken } = useAuth();
   const router = useRouter();
 
   const [pets, setPets] = useState([]);
@@ -26,8 +32,6 @@ export default function Home() {
   const [refreshing, setRefreshing] = useState(false);
   const [showFilterModal, setShowFilterModal] = useState(false);
 
-  // ✅ ยึด adoption_status เป็นตัวจริง
-  // available = แสดง, adopted = ไม่แสดง
   const VISIBLE_ADOPTION_STATUS = "available";
 
   const [filters, setFilters] = useState({
@@ -39,23 +43,48 @@ export default function Home() {
   const [availableCategories, setAvailableCategories] = useState([]);
   const [availableBreeds, setAvailableBreeds] = useState([]);
 
-  // ✅ helper: เช็คการแสดงแบบกันทุกเคส
+  // =========================
+  // ✅ REPORT (user_reports)
+  // =========================
+  const [showReportModal, setShowReportModal] = useState(false);
+
+  // shape:
+  // {
+  //   pet_id,
+  //   reported_clerk_id,
+  //   preview: { name, breed, category, image_url, owner_full_name, owner_avatar_url }
+  // }
+  const [reportTarget, setReportTarget] = useState(null);
+
+  const [reportReason, setReportReason] = useState("สแปม/หลอกลวง");
+  const [reportDetail, setReportDetail] = useState("");
+  const [submittingReport, setSubmittingReport] = useState(false);
+
+  const REPORT_REASONS = [
+    "สแปม/หลอกลวง",
+    "ข้อมูลเท็จ",
+    "เนื้อหาไม่เหมาะสม",
+    "ทารุณสัตว์/อันตราย",
+    "ขายสัตว์",
+    "อื่นๆ",
+  ];
+
+  const getAuthedSupabase = async () => {
+    const token = await getToken({ template: "supabase" });
+    if (!token) throw new Error("Missing Clerk token (template: supabase)");
+    return createClerkSupabaseClient(token);
+  };
+
   const isVisiblePet = (p) => {
     const st = (p?.adoption_status ?? "").toString().trim().toLowerCase();
-    // แสดงเฉพาะ available เท่านั้น
     if (st !== VISIBLE_ADOPTION_STATUS) return false;
-
-    // กันเหนียว ถ้ามี field adopted เป็น true ก็ไม่แสดง
     if (p?.adopted === true) return false;
-
     return true;
   };
 
   const fetchPets = async () => {
     setLoadingPets(true);
     try {
-      // ✅ กรองที่ DB ก่อน (หมายเหตุ: eq จะ case-sensitive บางที)
-      // ถ้าคุณเก็บเป็น "available" ตัวเล็กใน DB ทั้งหมด -> ใช้ eq ได้เลย
       const { data, error } = await supabase
         .from("pets")
         .select("*")
@@ -65,9 +94,7 @@ export default function Home() {
 
       if (error) throw error;
 
-      // ✅ กันหลุดซ้ำในแอป (รองรับกรณีบางแถวเป็น "Available"/มีช่องว่าง)
       const petsData = (data || []).filter(isVisiblePet);
-
       setPets(petsData);
 
       const categories = [
@@ -123,14 +150,17 @@ export default function Home() {
     return () => {
       supabase.removeChannel(channel);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     fetchPets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     applyFilters();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters, pets]);
 
   const handleRefresh = () => {
@@ -151,11 +181,177 @@ export default function Home() {
     return { icon: "help-circle-outline", color: "#6B7280", label: "ไม่ระบุ" };
   };
 
+  // =========================
+  // ✅ REPORT HANDLERS
+  // =========================
+  const openReport = async (pet) => {
+    try {
+      const reportedClerkId = pet?.user_id; // pets.user_id = clerk id (text)
+
+      if (!user?.id) {
+        Alert.alert("กรุณาเข้าสู่ระบบ", "ต้องเข้าสู่ระบบก่อนจึงรายงานได้");
+        return;
+      }
+
+      if (!reportedClerkId || typeof reportedClerkId !== "string") {
+        Alert.alert("ไม่สามารถรายงานได้", "ไม่พบข้อมูลเจ้าของโพสต์นี้");
+        return;
+      }
+
+      // กันข้อมูล owner ผิดรูปแบบ
+      if (!reportedClerkId.startsWith("user_")) {
+        Alert.alert(
+          "รายงานไม่ได้",
+          "ข้อมูลเจ้าของโพสต์ไม่ถูกต้อง (user_id ไม่ใช่ Clerk ID)",
+        );
+        return;
+      }
+
+      if (user.id === reportedClerkId) {
+        Alert.alert("ไม่สามารถทำได้", "คุณไม่สามารถรายงานตัวเองได้");
+        return;
+      }
+
+      // pets.id เป็น uuid string
+      if (!pet?.id || typeof pet.id !== "string") {
+        Alert.alert("รายงานไม่ได้", "ไม่พบ Pet ID ของโพสต์นี้");
+        return;
+      }
+
+      // ✅ ดึงชื่อจริง: ผู้รายงาน (user) + เจ้าของโพสต์ (reported)
+      const { data: users, error: usersErr } = await supabase
+        .from("users")
+        .select("clerk_id, full_name, avatar_url")
+        .in("clerk_id", [user.id, reportedClerkId]);
+
+      if (usersErr) console.log("fetch users error:", usersErr);
+
+      const usersMap = new Map((users || []).map((u) => [u.clerk_id, u]));
+
+      const reporter = usersMap.get(user.id);
+      const reported = usersMap.get(reportedClerkId);
+
+      setReportTarget({
+        pet_id: pet.id,
+        reported_clerk_id: reportedClerkId,
+        preview: {
+          name: pet?.name ?? "-",
+          breed: pet?.breed ?? "ทั่วไป",
+          category: pet?.category ?? "-",
+          image_url: pet?.image_url ?? null,
+          reporter_full_name: reporter?.full_name ?? null,
+          owner_full_name: reported?.full_name ?? null,
+          owner_avatar_url: reported?.avatar_url ?? null,
+        },
+      });
+
+      setReportReason("สแปม/หลอกลวง");
+      setReportDetail("");
+      setShowReportModal(true);
+    } catch (e) {
+      console.error("openReport error:", e);
+      Alert.alert("เกิดข้อผิดพลาด", "ไม่สามารถเปิดรายงานได้ กรุณาลองใหม่");
+    }
+  };
+
+  const canSubmit = useMemo(() => {
+    return (
+      !!user?.id &&
+      !!reportTarget?.pet_id &&
+      !!reportTarget?.reported_clerk_id &&
+      !submittingReport
+    );
+  }, [
+    user?.id,
+    reportTarget?.pet_id,
+    reportTarget?.reported_clerk_id,
+    submittingReport,
+  ]);
+
+  const submitReport = async () => {
+    const petId = reportTarget?.pet_id;
+
+    if (!user?.id || !reportTarget?.reported_clerk_id || !petId) {
+      Alert.alert("ข้อผิดพลาด", "ข้อมูลไม่ครบถ้วน กรุณาลองใหม่");
+      return;
+    }
+
+    if (typeof petId !== "string") {
+      Alert.alert("ข้อผิดพลาด", "Pet ID รูปแบบไม่ถูกต้อง");
+      return;
+    }
+
+    if (reportReason === "อื่นๆ" && !reportDetail.trim()) {
+      Alert.alert(
+        "กรุณาระบุรายละเอียด",
+        'เมื่อเลือก "อื่นๆ" กรุณากรอกรายละเอียด',
+      );
+      return;
+    }
+
+    try {
+      setSubmittingReport(true);
+
+      // ✅ ต้องใช้ authed client ไม่งั้น auth.jwt() เป็น null แล้ว RLS จะกัน
+      const authed = await getAuthedSupabase();
+
+      const reporterName = reportTarget?.preview?.reporter_full_name
+        ? `ผู้รายงาน: ${reportTarget.preview.reporter_full_name}\n`
+        : "";
+
+      const ownerName = reportTarget?.preview?.owner_full_name
+        ? `เจ้าของโพสต์: ${reportTarget.preview.owner_full_name}\n`
+        : "";
+
+      const petInfo = `${reporterName}${ownerName}Pet ID: ${petId}`;
+      const fullDetails = reportDetail.trim()
+        ? `${petInfo}\n\nรายละเอียด: ${reportDetail.trim()}`
+        : petInfo;
+
+      const payload = {
+        pet_id: petId,
+        reporter_clerk_id: user.id,
+        reported_clerk_id: reportTarget.reported_clerk_id,
+        reason: reportReason,
+        details: fullDetails,
+        evidence_urls: [],
+        status: "open",
+        admin_note: null,
+      };
+
+      console.log("SEND report payload:", payload);
+
+      const { data, error } = await authed
+        .from("user_reports")
+        .insert(payload)
+        .select("id, pet_id")
+        .single();
+
+      if (error) throw error;
+
+      console.log("INSERT OK:", data);
+
+      Alert.alert(
+        "ส่งรายงานสำเร็จ",
+        "ขอบคุณที่แจ้งปัญหา ทีมงานจะตรวจสอบโดยเร็วที่สุด 🙏",
+      );
+
+      setShowReportModal(false);
+      setReportTarget(null);
+      setReportDetail("");
+    } catch (err) {
+      console.error("submitReport error:", err);
+      Alert.alert("เกิดข้อผิดพลาด", err?.message || "ไม่สามารถส่งรายงานได้");
+    } finally {
+      setSubmittingReport(false);
+    }
+  };
+
   const renderPetItem = ({ item }) => {
-    // ✅ ชั้นสุดท้าย กันหลุดก่อน render
     if (!isVisiblePet(item)) return null;
 
     const gender = getGenderIcon(item.sex);
+
     return (
       <TouchableOpacity
         style={styles.petCard}
@@ -169,6 +365,7 @@ export default function Home() {
             }}
             style={styles.petImage}
           />
+
           <View style={styles.categoryBadge}>
             <Text style={styles.categoryBadgeText}>
               {item.category === "สุนัข"
@@ -179,6 +376,16 @@ export default function Home() {
               {item.category}
             </Text>
           </View>
+
+          {/* ✅ ปุ่มรายงานบนรูป */}
+          <TouchableOpacity
+            style={styles.reportFloatingBtn}
+            onPress={() => openReport(item)}
+            activeOpacity={0.85}
+          >
+            <Ionicons name="flag-outline" size={16} color="#EF4444" />
+            <Text style={styles.reportFloatingText}>รายงาน</Text>
+          </TouchableOpacity>
         </View>
 
         <View style={styles.petInfo}>
@@ -189,16 +396,19 @@ export default function Home() {
               </Text>
               <Text style={styles.petBreed}>{item.breed || "ทั่วไป"}</Text>
             </View>
-            <View
-              style={[
-                styles.sexBadge,
-                { backgroundColor: gender.color + "15" },
-              ]}
-            >
-              <Ionicons name={gender.icon} size={14} color={gender.color} />
-              <Text style={[styles.sexText, { color: gender.color }]}>
-                {gender.label}
-              </Text>
+
+            <View style={styles.rightHeader}>
+              <View
+                style={[
+                  styles.sexBadge,
+                  { backgroundColor: gender.color + "15" },
+                ]}
+              >
+                <Ionicons name={gender.icon} size={14} color={gender.color} />
+                <Text style={[styles.sexText, { color: gender.color }]}>
+                  {gender.label}
+                </Text>
+              </View>
             </View>
           </View>
 
@@ -246,7 +456,7 @@ export default function Home() {
             <View style={styles.emptyBox}>
               <Ionicons name="paw-outline" size={60} color="#DDD" />
               <Text style={styles.emptyText}>
-                ตอนนี้ยังไม่มีน้องที่ “พร้อมรับเลี้ยง”
+                ตอนนี้ยังไม่มีน้องที่ "พร้อมรับเลี้ยง"
               </Text>
             </View>
           )
@@ -298,7 +508,7 @@ export default function Home() {
                       styles.chip,
                       filters.sex === sex && styles.chipActive,
                     ]}
-                    onPress={() => setFilters({ ...filters, sex: sex })}
+                    onPress={() => setFilters({ ...filters, sex })}
                   >
                     <Text
                       style={[
@@ -362,6 +572,148 @@ export default function Home() {
           </View>
         </View>
       </Modal>
+
+      {/* ✅ Report Modal */}
+      <Modal visible={showReportModal} animationType="slide" transparent={true}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>🚨 รายงานโพสต์</Text>
+              <TouchableOpacity
+                onPress={() => setShowReportModal(false)}
+                disabled={submittingReport}
+              >
+                <Ionicons name="close-circle" size={32} color="#CCC" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={{ padding: 20 }}>
+              <Text style={styles.groupLabel}>โพสต์ที่ถูกรายงาน</Text>
+
+              <View style={styles.reportPreview}>
+                <View style={{ flexDirection: "row", gap: 10 }}>
+                  {!!reportTarget?.preview?.image_url && (
+                    <Image
+                      source={{ uri: reportTarget.preview.image_url }}
+                      style={{
+                        width: 60,
+                        height: 60,
+                        borderRadius: 12,
+                        backgroundColor: "#F3F4F6",
+                      }}
+                    />
+                  )}
+                  <View style={{ flex: 1 }}>
+                    <Text style={{ fontWeight: "800", fontSize: 16 }}>
+                      {reportTarget?.preview?.name ?? "-"}
+                    </Text>
+
+                    <Text style={{ color: "#6B7280", marginTop: 4 }}>
+                      {(reportTarget?.preview?.breed ?? "ทั่วไป") +
+                        " • " +
+                        (reportTarget?.preview?.category ?? "-")}
+                    </Text>
+
+                    <Text
+                      style={{
+                        color: "#111827",
+                        marginTop: 6,
+                        fontWeight: "900",
+                      }}
+                    >
+                      เจ้าของโพสต์:{" "}
+                      {reportTarget?.preview?.owner_full_name || "ไม่พบชื่อ"}
+                    </Text>
+
+                    <Text
+                      style={{
+                        color: "#9CA3AF",
+                        marginTop: 6,
+                        fontWeight: "700",
+                      }}
+                    >
+                      Pet ID: {reportTarget?.pet_id ?? "-"}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              <Text style={styles.groupLabel}>
+                เหตุผลในการรายงาน <Text style={{ color: "#EF4444" }}>*</Text>
+              </Text>
+              <View style={styles.chipRow}>
+                {REPORT_REASONS.map((r) => (
+                  <TouchableOpacity
+                    key={r}
+                    style={[
+                      styles.chip,
+                      reportReason === r && styles.chipActive,
+                    ]}
+                    onPress={() => setReportReason(r)}
+                    activeOpacity={0.9}
+                    disabled={submittingReport}
+                  >
+                    <Text
+                      style={[
+                        styles.chipText,
+                        reportReason === r && styles.chipTextActive,
+                      ]}
+                    >
+                      {r}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <Text style={styles.groupLabel}>
+                รายละเอียดเพิ่มเติม
+                {reportReason === "อื่นๆ" && (
+                  <Text style={{ color: "#EF4444" }}> *</Text>
+                )}
+              </Text>
+              <TextInput
+                value={reportDetail}
+                onChangeText={setReportDetail}
+                placeholder="พิมพ์รายละเอียด เช่น เหตุการณ์/ข้อความ/สิ่งที่น่าสงสัย..."
+                multiline
+                style={styles.textAreaInput}
+                editable={!submittingReport}
+              />
+
+              <View style={styles.warningBox}>
+                <Ionicons name="alert-circle" size={20} color="#F59E0B" />
+                <Text style={styles.warningText}>
+                  รายงานจะถูกส่งให้แอดมินตรวจสอบ{"\n"}
+                  การรายงานเท็จอาจส่งผลต่อบัญชีของคุณ
+                </Text>
+              </View>
+            </ScrollView>
+
+            <View style={styles.modalFooter}>
+              <TouchableOpacity
+                style={styles.resetBtn}
+                onPress={() => setShowReportModal(false)}
+                disabled={submittingReport}
+              >
+                <Text style={styles.resetBtnText}>ยกเลิก</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.applyBtn,
+                  (!canSubmit || submittingReport) && { opacity: 0.6 },
+                ]}
+                onPress={submitReport}
+                disabled={!canSubmit || submittingReport}
+              >
+                <Text style={styles.applyBtnText}>
+                  {submittingReport ? "กำลังส่ง..." : "ส่งรายงาน"}
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -386,6 +738,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   filterTriggerText: { color: "#FFF", fontWeight: "700", fontSize: 14 },
+
   petCard: {
     backgroundColor: "#FFF",
     borderRadius: 24,
@@ -396,18 +749,49 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     overflow: "hidden",
   },
-  petImageContainer: { height: 220, width: "100%", backgroundColor: "#F1F5F9" },
-  petImage: { width: "100%", height: "100%", resizeMode: "contain" },
+
+  petImageContainer: {
+    height: 220,
+    width: "100%",
+    backgroundColor: "#F1F5F9",
+    position: "relative",
+  },
+  petImage: { width: "100%", height: "100%", resizeMode: "cover" },
+
   categoryBadge: {
     position: "absolute",
     top: 12,
     left: 12,
-    backgroundColor: "rgba(255,255,255,0.9)",
+    backgroundColor: "rgba(255,255,255,0.95)",
     paddingHorizontal: 10,
     paddingVertical: 6,
     borderRadius: 10,
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
   },
   categoryBadgeText: { fontWeight: "700", color: "#8B5CF6", fontSize: 12 },
+
+  reportFloatingBtn: {
+    position: "absolute",
+    top: 12,
+    right: 12,
+    zIndex: 999,
+    elevation: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: "rgba(255,255,255,0.95)",
+    shadowColor: "#000",
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  reportFloatingText: { color: "#EF4444", fontWeight: "800", fontSize: 11 },
+
   petInfo: { padding: 16 },
   petHeader: {
     flexDirection: "row",
@@ -416,6 +800,9 @@ const styles = StyleSheet.create({
   },
   petName: { fontSize: 20, fontWeight: "800", color: "#1F2937" },
   petBreed: { fontSize: 14, color: "#9CA3AF", marginTop: 2 },
+
+  rightHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
+
   sexBadge: {
     flexDirection: "row",
     alignItems: "center",
@@ -425,6 +812,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   sexText: { fontSize: 13, fontWeight: "700" },
+
   petFooter: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -445,16 +833,17 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 6,
   },
+
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.4)",
+    backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "flex-end",
   },
   modalContent: {
     backgroundColor: "#FFF",
     borderTopLeftRadius: 30,
     borderTopRightRadius: 30,
-    height: "80%",
+    height: "85%",
   },
   modalHeader: {
     flexDirection: "row",
@@ -465,6 +854,7 @@ const styles = StyleSheet.create({
     borderBottomColor: "#F3F4F6",
   },
   modalTitle: { fontSize: 20, fontWeight: "800" },
+
   groupLabel: {
     fontSize: 16,
     fontWeight: "700",
@@ -472,6 +862,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     marginTop: 10,
   },
+
   chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 15 },
   chip: {
     paddingHorizontal: 16,
@@ -484,6 +875,7 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: "#8B5CF6", borderColor: "#8B5CF6" },
   chipText: { color: "#6B7280", fontWeight: "600" },
   chipTextActive: { color: "#FFF" },
+
   modalFooter: {
     flexDirection: "row",
     padding: 20,
@@ -507,6 +899,47 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   applyBtnText: { color: "#FFF", fontWeight: "800", fontSize: 16 },
+
   emptyBox: { alignItems: "center", marginTop: 60, gap: 10 },
   emptyText: { color: "#9CA3AF", fontWeight: "600" },
+
+  reportPreview: {
+    padding: 14,
+    borderRadius: 16,
+    backgroundColor: "#F9FAFB",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    marginBottom: 16,
+  },
+  textAreaInput: {
+    minHeight: 120,
+    borderRadius: 14,
+    backgroundColor: "#F9FAFB",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    padding: 14,
+    marginBottom: 16,
+    textAlignVertical: "top",
+    color: "#111827",
+    fontWeight: "600",
+    fontSize: 14,
+  },
+  warningBox: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    padding: 14,
+    backgroundColor: "#FFFBEB",
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#FEF3C7",
+    marginTop: 8,
+  },
+  warningText: {
+    flex: 1,
+    color: "#92400E",
+    fontWeight: "600",
+    fontSize: 13,
+    lineHeight: 18,
+  },
 });

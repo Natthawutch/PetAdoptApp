@@ -31,7 +31,7 @@ export default function VolunteerTabsLayout() {
         }}
       />
 
-      {/* 🥉 Chat */}
+      {/* 🥉 Chat
       <Tabs.Screen
         name="chats"
         options={{
@@ -40,7 +40,7 @@ export default function VolunteerTabsLayout() {
             <Ionicons name="chatbubbles-outline" size={size} color={color} />
           ),
         }}
-      />
+      /> */}
 
       {/* Notifications */}
       <Tabs.Screen

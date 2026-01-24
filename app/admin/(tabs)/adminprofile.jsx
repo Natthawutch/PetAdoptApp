@@ -1,33 +1,205 @@
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
 } from "react-native";
-// ถอยออกจาก (tabs) -> ถอยออกจาก admin -> ถอยออกจาก app -> เข้าไปที่ utils
+
+import { createClerkSupabaseClient } from "../../../config/supabaseClient";
+import { fetchDashboardStats } from "../../../lib/dashboardApi";
 import { clearAdminStatus } from "../../../utils/adminStorage";
+
+const RESET_STATS = {
+  totalUsers: null,
+  volunteers: null,
+  pendingApprovals: null,
+  animalsLookingForHome: null,
+  adoptionsSuccess: null,
+};
+
+const safeText = (v, fallback = "-") =>
+  v === null || v === undefined || String(v).trim() === ""
+    ? fallback
+    : String(v);
+
 export default function AdminProfile() {
-  const { user } = useUser();
-  const { signOut } = useAuth();
+  const { user, isLoaded } = useUser();
+  const { signOut, getToken } = useAuth();
   const router = useRouter();
+
+  // ✅ primitive dependencies
+  const clerkId = user?.id ?? "";
+  const clerkEmail = user?.primaryEmailAddress?.emailAddress ?? "";
+  const clerkImage = user?.imageUrl ?? "";
+  const clerkName =
+    [user?.firstName, user?.lastName].filter(Boolean).join(" ").trim() ||
+    "Admin User";
+
+  const [dbUser, setDbUser] = useState(null);
+  const [stats, setStats] = useState(RESET_STATS);
+  const [loading, setLoading] = useState(true);
+  const [lastError, setLastError] = useState("");
+
+  // ✅ กัน useEffect ยิงซ้ำเพราะ getToken identity เปลี่ยน
+  const getTokenRef = useRef(getToken);
+  useEffect(() => {
+    getTokenRef.current = getToken;
+  }, [getToken]);
+
+  const merged = useMemo(() => {
+    const fullName = safeText(dbUser?.full_name, clerkName);
+    const email = safeText(dbUser?.email, clerkEmail);
+    const avatarUrl = dbUser?.avatar_url || clerkImage || "";
+    const role = safeText(dbUser?.role, "admin");
+    const phone = safeText(dbUser?.phone_number ?? dbUser?.phone, "-");
+    const verificationStatus = safeText(
+      dbUser?.verification_status,
+      "unverified",
+    );
+
+    return { fullName, email, avatarUrl, role, phone, verificationStatus };
+  }, [dbUser, clerkName, clerkEmail, clerkImage]);
+
+  useEffect(() => {
+    let alive = true;
+
+    const loadAll = async () => {
+      try {
+        setLastError("");
+        setLoading(true);
+
+        if (!isLoaded) return;
+        if (!clerkId && !clerkEmail) {
+          throw new Error("Missing Clerk identity (id/email)");
+        }
+
+        const token = await getTokenRef.current({ template: "supabase" });
+        if (!token) throw new Error("Missing Clerk token (template: supabase)");
+
+        const supabase = createClerkSupabaseClient(token);
+
+        const fetchProfile = async () => {
+          let profile = null;
+
+          if (clerkId) {
+            const { data, error } = await supabase
+              .from("users")
+              .select("*")
+              .eq("clerk_id", clerkId)
+              .maybeSingle();
+            if (error) throw error;
+            profile = data ?? null;
+          }
+
+          if (!profile && clerkEmail) {
+            const { data, error } = await supabase
+              .from("users")
+              .select("*")
+              .eq("email", clerkEmail)
+              .maybeSingle();
+            if (error) throw error;
+            profile = data ?? null;
+          }
+
+          return profile;
+        };
+
+        // ✅ โหลดพร้อมกัน
+        const [profile, dashboardStats] = await Promise.all([
+          fetchProfile(),
+          fetchDashboardStats(token),
+        ]);
+
+        if (!alive) return;
+
+        setDbUser(profile);
+        setStats(dashboardStats || RESET_STATS);
+
+        // ✅ optional: enforce admin role (ปรับตามระบบคุณ)
+        const role = String(profile?.role || "admin").toLowerCase();
+        if (profile && role !== "admin" && role !== "superadmin") {
+          Alert.alert("ไม่มีสิทธิ์เข้าถึง", "บัญชีนี้ไม่ใช่ผู้ดูแลระบบ");
+          router.replace("/login");
+        }
+      } catch (e) {
+        console.error("❌ AdminProfile load error:", e);
+        if (!alive) return;
+        setDbUser(null);
+        setStats(RESET_STATS);
+        setLastError(String(e?.message || e));
+      } finally {
+        if (alive) setLoading(false);
+      }
+    };
+
+    loadAll();
+
+    return () => {
+      alive = false;
+    };
+  }, [isLoaded, clerkId, clerkEmail, router]);
+
+  const quickStats = useMemo(
+    () => [
+      {
+        label: "Users",
+        value: stats.totalUsers == null ? "—" : String(stats.totalUsers),
+        icon: "people",
+      },
+      {
+        label: "Pending",
+        value:
+          stats.pendingApprovals == null ? "—" : String(stats.pendingApprovals),
+        icon: "alert-circle",
+      },
+      {
+        label: "Volunteers",
+        value: stats.volunteers == null ? "—" : String(stats.volunteers),
+        icon: "hand-left",
+      },
+      {
+        label: "Adopted",
+        value:
+          stats.adoptionsSuccess == null ? "—" : String(stats.adoptionsSuccess),
+        icon: "heart",
+      },
+    ],
+    [stats],
+  );
+
+  const adminActions = [
+    {
+      label: "Users",
+      icon: "people-outline",
+      color: "#6366f1",
+      onPress: () => router.push("/admin/users"),
+    },
+
+    {
+      label: "Reports",
+      icon: "document-text-outline",
+      color: "#f59e0b",
+      onPress: () => router.push("/admin/user-reports"),
+    },
+  ];
 
   const handleLogout = async () => {
     Alert.alert("ออกจากระบบ", "คุณต้องการออกจากระบบใช่หรือไม่?", [
-      {
-        text: "ยกเลิก",
-        style: "cancel",
-      },
+      { text: "ยกเลิก", style: "cancel" },
       {
         text: "ออกจากระบบ",
         style: "destructive",
         onPress: async () => {
           try {
-            await clearAdminStatus(); // ✅ เคลียร์สถานะ admin
+            await clearAdminStatus();
             await signOut();
             router.replace("/login");
           } catch (err) {
@@ -39,27 +211,39 @@ export default function AdminProfile() {
     ]);
   };
 
-  const adminStats = [
-    { label: "Users", value: "1.2K", icon: "people" },
-    { label: "Reports", value: "45", icon: "document-text" },
-  ];
+  const initial = (merged.fullName?.[0] || "A").toUpperCase();
 
-  const adminActions = [
-    { label: "Users", icon: "people-outline", color: "#6366f1" },
-    { label: "Analytics", icon: "stats-chart-outline", color: "#06b6d4" },
-    { label: "Reports", icon: "document-text-outline", color: "#f59e0b" },
-  ];
+  // ✅ Clerk ยังไม่โหลด
+  if (!isLoaded) {
+    return (
+      <View
+        style={[
+          styles.container,
+          { justifyContent: "center", alignItems: "center" },
+        ]}
+      >
+        <ActivityIndicator />
+        <Text style={{ marginTop: 10, color: "#64748b" }}>
+          Loading profile…
+        </Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false}>
-        {/* Profile Card */}
         <View style={styles.profileCard}>
           <View style={styles.avatarContainer}>
             <View style={styles.avatar}>
-              <Text style={styles.avatarText}>
-                {user?.firstName?.[0] || "A"}
-              </Text>
+              {!!merged.avatarUrl ? (
+                <Image
+                  source={{ uri: merged.avatarUrl }}
+                  style={styles.avatarImg}
+                />
+              ) : (
+                <Text style={styles.avatarText}>{initial}</Text>
+              )}
             </View>
             <View style={styles.adminBadge}>
               <Ionicons name="shield-checkmark" size={14} color="#fff" />
@@ -67,24 +251,47 @@ export default function AdminProfile() {
           </View>
 
           <View style={styles.profileInfo}>
-            <Text style={styles.name}>
-              {user?.firstName || "Admin"} {user?.lastName || "User"}
-            </Text>
-            <View style={styles.emailContainer}>
+            <Text style={styles.name}>{merged.fullName}</Text>
+
+            <View style={styles.row}>
               <Ionicons name="mail-outline" size={14} color="#64748b" />
-              <Text style={styles.email}>
-                {user?.primaryEmailAddress?.emailAddress}
-              </Text>
+              <Text style={styles.mutedText}>{merged.email}</Text>
+            </View>
+
+            <View style={styles.row}>
+              <Ionicons name="person-outline" size={14} color="#64748b" />
+              <Text style={styles.mutedText}>{merged.role}</Text>
+            </View>
+
+            <View style={styles.row}>
+              <Ionicons name="call-outline" size={14} color="#64748b" />
+              <Text style={styles.mutedText}>{merged.phone}</Text>
+            </View>
+
+            <View style={styles.row}>
+              <Ionicons name="alert-circle-outline" size={14} color="#64748b" />
+              <Text style={styles.mutedText}>{merged.verificationStatus}</Text>
             </View>
           </View>
         </View>
 
-        {/* Quick Stats */}
+        {!!lastError && (
+          <View style={styles.errorBox}>
+            <Text style={styles.errorText}>{lastError}</Text>
+          </View>
+        )}
+
+        {loading && (
+          <View style={{ paddingTop: 14 }}>
+            <ActivityIndicator />
+          </View>
+        )}
+
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Quick Stats</Text>
-          <View style={styles.statsGrid}>
-            {adminStats.map((stat, idx) => (
-              <View key={idx} style={styles.statCard}>
+          <View style={styles.statsGridWrap}>
+            {quickStats.map((stat, idx) => (
+              <View key={idx} style={styles.statCardHalf}>
                 <View style={styles.statIcon}>
                   <Ionicons name={stat.icon} size={20} color="#6366f1" />
                 </View>
@@ -95,13 +302,13 @@ export default function AdminProfile() {
           </View>
         </View>
 
-        {/* Admin Tools */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Admin Tools</Text>
           <View style={styles.toolsGrid}>
             {adminActions.map((action, idx) => (
               <Pressable
                 key={idx}
+                onPress={action.onPress}
                 style={({ pressed }) => [
                   styles.toolCard,
                   pressed && styles.toolCardPressed,
@@ -121,7 +328,6 @@ export default function AdminProfile() {
           </View>
         </View>
 
-        {/* Logout Button */}
         <View style={styles.section}>
           <Pressable
             onPress={handleLogout}
@@ -141,54 +347,9 @@ export default function AdminProfile() {
   );
 }
 
-// ... styles เหมือนเดิม
-
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#f8fafc",
-  },
-  header: {
-    paddingHorizontal: 20,
-    paddingTop: 60,
-    paddingBottom: 20,
-    backgroundColor: "#fff",
-  },
-  headerTop: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  greeting: {
-    fontSize: 16,
-    color: "#64748b",
-    marginBottom: 4,
-  },
-  adminTitle: {
-    fontSize: 28,
-    fontWeight: "800",
-    color: "#1e293b",
-  },
-  notificationButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: "#f1f5f9",
-    justifyContent: "center",
-    alignItems: "center",
-    position: "relative",
-  },
-  notificationBadge: {
-    position: "absolute",
-    top: 10,
-    right: 10,
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: "#ef4444",
-    borderWidth: 2,
-    borderColor: "#fff",
-  },
+  container: { flex: 1, backgroundColor: "#f8fafc" },
+
   profileCard: {
     backgroundColor: "#fff",
     marginHorizontal: 20,
@@ -203,10 +364,8 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     elevation: 2,
   },
-  avatarContainer: {
-    position: "relative",
-    marginRight: 16,
-  },
+
+  avatarContainer: { position: "relative", marginRight: 16 },
   avatar: {
     width: 64,
     height: 64,
@@ -214,12 +373,11 @@ const styles = StyleSheet.create({
     backgroundColor: "#6366f1",
     justifyContent: "center",
     alignItems: "center",
+    overflow: "hidden",
   },
-  avatarText: {
-    fontSize: 24,
-    fontWeight: "700",
-    color: "#fff",
-  },
+  avatarImg: { width: 64, height: 64, borderRadius: 32 },
+  avatarText: { fontSize: 24, fontWeight: "700", color: "#fff" },
+
   adminBadge: {
     position: "absolute",
     bottom: 0,
@@ -233,40 +391,35 @@ const styles = StyleSheet.create({
     borderWidth: 3,
     borderColor: "#fff",
   },
-  profileInfo: {
-    flex: 1,
+
+  profileInfo: { flex: 1 },
+  name: { fontSize: 18, fontWeight: "700", color: "#1e293b", marginBottom: 8 },
+
+  row: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 },
+  mutedText: { fontSize: 13, color: "#64748b" },
+
+  errorBox: {
+    marginHorizontal: 20,
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "#fff",
+    borderWidth: 1,
+    borderColor: "#fee2e2",
   },
-  name: {
-    fontSize: 18,
-    fontWeight: "700",
-    color: "#1e293b",
-    marginBottom: 6,
-  },
-  emailContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
-  email: {
-    fontSize: 13,
-    color: "#64748b",
-  },
-  section: {
-    paddingHorizontal: 20,
-    marginTop: 24,
-  },
+  errorText: { fontSize: 12, color: "#dc2626" },
+
+  section: { paddingHorizontal: 20, marginTop: 24 },
   sectionTitle: {
     fontSize: 18,
     fontWeight: "700",
     color: "#1e293b",
     marginBottom: 16,
   },
-  statsGrid: {
-    flexDirection: "row",
-    gap: 12,
-  },
-  statCard: {
-    flex: 1,
+
+  statsGridWrap: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  statCardHalf: {
+    width: "48%",
     backgroundColor: "#fff",
     padding: 16,
     borderRadius: 16,
@@ -292,16 +445,9 @@ const styles = StyleSheet.create({
     color: "#1e293b",
     marginBottom: 2,
   },
-  statLabel: {
-    fontSize: 11,
-    color: "#64748b",
-    fontWeight: "600",
-  },
-  toolsGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 12,
-  },
+  statLabel: { fontSize: 11, color: "#64748b", fontWeight: "600" },
+
+  toolsGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
   toolCard: {
     width: "48%",
     backgroundColor: "#fff",
@@ -314,10 +460,7 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 2,
   },
-  toolCardPressed: {
-    opacity: 0.7,
-    transform: [{ scale: 0.98 }],
-  },
+  toolCardPressed: { opacity: 0.7, transform: [{ scale: 0.98 }] },
   toolIcon: {
     width: 56,
     height: 56,
@@ -326,35 +469,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginBottom: 12,
   },
-  toolLabel: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#334155",
-  },
-  menuItem: {
-    backgroundColor: "#fff",
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 8,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 1,
-  },
-  menuItemLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  menuItemText: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#334155",
-  },
+  toolLabel: { fontSize: 14, fontWeight: "600", color: "#334155" },
+
   logoutButton: {
     backgroundColor: "#fff",
     flexDirection: "row",
@@ -366,13 +482,6 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
     borderColor: "#fee2e2",
   },
-  logoutButtonPressed: {
-    opacity: 0.7,
-    backgroundColor: "#fef2f2",
-  },
-  logoutText: {
-    fontSize: 16,
-    fontWeight: "700",
-    color: "#dc2626",
-  },
+  logoutButtonPressed: { opacity: 0.7, backgroundColor: "#fef2f2" },
+  logoutText: { fontSize: 16, fontWeight: "700", color: "#dc2626" },
 });

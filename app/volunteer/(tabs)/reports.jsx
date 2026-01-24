@@ -1,11 +1,19 @@
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   ActivityIndicator,
   Animated,
   FlatList,
+  Pressable,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -24,619 +32,60 @@ function jitter(ms, pct = 0.2) {
   const delta = ms * pct;
   return Math.floor(ms - delta + Math.random() * (delta * 2));
 }
-
-export default function VolunteerReports() {
-  const router = useRouter();
-  const { getToken } = useAuth();
-  const { user } = useUser();
-  const userId = user?.id;
-
-  const [reports, setReports] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [selectedFilter, setSelectedFilter] = useState("all");
-  const [realtimeStatus, setRealtimeStatus] = useState("disconnected"); // disconnected | CONNECTING | SUBSCRIBED | ...
-  const [newReportId, setNewReportId] = useState(null);
-
-  // ✅ volunteer uuid in DB (users.id)
-  const [volunteerUuid, setVolunteerUuid] = useState(null);
-
-  // ✅ UX: banner when a case moved to completed and disappears from "all"
-  const [justCompletedCount, setJustCompletedCount] = useState(0);
-  const justCompletedTimerRef = useRef(null);
-
-  // Animation for LIVE status
-  const pulseAnim = useRef(new Animated.Value(1)).current;
-
-  // Refs / Lifecycles
-  const mountedRef = useRef(true);
-  const isInitializedRef = useRef(false);
-
-  // Realtime refs
-  const realtimeClientRef = useRef(null);
-  const channelRef = useRef(null);
-
-  // Guards
-  const cleanupInProgressRef = useRef(false);
-  const connectLockRef = useRef(false);
-  const intentionalCloseRef = useRef(false);
-
-  // Retry
-  const retryAttemptRef = useRef(0);
-  const retryTimerRef = useRef(null);
-
-  /* --------------------------- Timers ---------------------------- */
-  const clearTimer = useCallback((ref) => {
-    if (ref.current) {
-      clearTimeout(ref.current);
-      ref.current = null;
-    }
-  }, []);
-
-  const clearJustCompletedBanner = useCallback(() => {
-    clearTimer(justCompletedTimerRef);
-    setJustCompletedCount(0);
-  }, [clearTimer]);
-
-  const bumpJustCompleted = useCallback(() => {
-    setJustCompletedCount((c) => c + 1);
-    clearTimer(justCompletedTimerRef);
-    justCompletedTimerRef.current = setTimeout(() => {
-      setJustCompletedCount(0);
-      justCompletedTimerRef.current = null;
-    }, 2500);
-  }, [clearTimer]);
-
-  /* -------------------------- Token/Supabase -------------------------- */
-  const getSupabase = useCallback(
-    async (fresh = false) => {
-      const token = fresh
-        ? await getToken({ template: "supabase", skipCache: true })
-        : await getToken({ template: "supabase" });
-
-      if (!token) return null;
-      return createClerkSupabaseClient(token);
-    },
-    [getToken],
-  );
-
-  const resolveVolunteerUuid = useCallback(
-    async (supabase) => {
-      if (!supabase || !userId) return null;
-
-      const { data: me, error } = await supabase
-        .from("users")
-        .select("id")
-        .eq("clerk_id", userId)
-        .single();
-
-      if (error || !me?.id) return null;
-      return me.id;
-    },
-    [userId],
-  );
-
-  /* -------------------- Visibility Rules -------------------- */
-  // ✅ visible if:
-  // - pending AND assigned_volunteer_id is null  (public unassigned)
-  // - OR assigned_volunteer_id === my volunteerUuid (mine)
-  const isVisibleToMe = useCallback(
-    (r) => {
-      if (!r) return false;
-      if (r.status === "pending") return !r.assigned_volunteer_id;
-      return !!volunteerUuid && r.assigned_volunteer_id === volunteerUuid;
-    },
-    [volunteerUuid],
-  );
-
-  const normalizeReports = useCallback((arr) => {
-    const map = new Map();
-    for (const r of arr || []) {
-      if (r?.id) map.set(r.id, r);
-    }
-    const next = Array.from(map.values());
-    next.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    return next;
-  }, []);
-
-  /* -------------------------- Load Reports -------------------------- */
-  const loadReports = useCallback(
-    async ({ freshToken = false } = {}) => {
-      try {
-        if (!userId) return;
-
-        const supabase = await getSupabase(freshToken);
-        if (!supabase) return;
-
-        let vu = volunteerUuid;
-        if (!vu) {
-          vu = await resolveVolunteerUuid(supabase);
-          if (!vu) return;
-          setVolunteerUuid(vu);
-        }
-
-        // Fetch:
-        // 1) pending unassigned
-        // 2) mine (assigned to me)
-        const [pendingRes, mineRes] = await Promise.all([
-          supabase
-            .from("reports")
-            .select("*")
-            .eq("status", "pending")
-            .is("assigned_volunteer_id", null)
-            .order("created_at", { ascending: false }),
-          supabase
-            .from("reports")
-            .select("*")
-            .eq("assigned_volunteer_id", vu)
-            .order("created_at", { ascending: false }),
-        ]);
-
-        if (pendingRes.error) throw pendingRes.error;
-        if (mineRes.error) throw mineRes.error;
-
-        const merged = normalizeReports([
-          ...(pendingRes.data || []),
-          ...(mineRes.data || []),
-        ]);
-
-        setReports(merged);
-      } catch (e) {
-        console.log("❌ loadReports error:", e);
-      }
-    },
-    [
-      userId,
-      getSupabase,
-      volunteerUuid,
-      resolveVolunteerUuid,
-      normalizeReports,
-    ],
-  );
-
-  /* -------------------------- Realtime Cleanup -------------------------- */
-  const cleanupRealtime = useCallback(async () => {
-    if (cleanupInProgressRef.current) return;
-    cleanupInProgressRef.current = true;
-
-    try {
-      // mark intentional close so CLOSED won't trigger reconnect
-      intentionalCloseRef.current = true;
-
-      clearTimer(retryTimerRef);
-
-      if (realtimeClientRef.current && channelRef.current) {
-        console.log("🧹 Removing channel...");
-        await realtimeClientRef.current.removeChannel(channelRef.current);
-      }
-    } catch (e) {
-      console.log("cleanupRealtime error:", e);
-    } finally {
-      channelRef.current = null;
-      realtimeClientRef.current = null;
-      cleanupInProgressRef.current = false;
-
-      // release intentional flag in next tick
-      setTimeout(() => {
-        intentionalCloseRef.current = false;
-      }, 0);
-    }
-  }, [clearTimer]);
-
-  /* -------------------------- Reconnect Backoff -------------------------- */
-  const scheduleReconnect = useCallback(
-    (reason = "unknown") => {
-      if (!mountedRef.current) return;
-
-      const attempt = retryAttemptRef.current + 1;
-      retryAttemptRef.current = attempt;
-
-      const base = clamp(900 * Math.pow(1.8, attempt - 1), 900, 12000);
-      const waitMs = jitter(base, 0.25);
-
-      clearTimer(retryTimerRef);
-      retryTimerRef.current = setTimeout(() => {
-        if (!mountedRef.current) return;
-        // only reconnect if not already connected / connecting
-        if (
-          realtimeStatus !== "SUBSCRIBED" &&
-          realtimeStatus !== "CONNECTING" &&
-          !connectLockRef.current
-        ) {
-          connectRealtime({ force: true, reason });
-        }
-      }, waitMs);
-    },
-    [clearTimer, realtimeStatus],
-  );
-
-  /* -------------------------- Realtime Connect -------------------------- */
-  const connectRealtime = useCallback(
-    async ({ force = false, reason = "manual" } = {}) => {
-      try {
-        if (!userId) return;
-        if (!volunteerUuid) return;
-
-        if (connectLockRef.current && !force) return;
-        connectLockRef.current = true;
-
-        setRealtimeStatus("CONNECTING");
-
-        // cleanup existing
-        await cleanupRealtime();
-
-        // get fresh token for WS
-        const token = await getToken({ template: "supabase", skipCache: true });
-        if (!token) {
-          setRealtimeStatus("disconnected");
-          connectLockRef.current = false;
-          return;
-        }
-
-        const realtime = getRealtimeClient(token);
-        realtimeClientRef.current = realtime;
-
-        // stable channel key per volunteer
-        const channel = realtime.channel(`reports-${volunteerUuid}`, {
-          config: { broadcast: { self: false } },
-        });
-
-        const upsertRow = (row, markNew = false) => {
-          if (!row?.id) return;
-          if (!isVisibleToMe(row)) return;
-
-          setReports((prev) => {
-            const exists = prev.some((r) => r.id === row.id);
-            const next = exists
-              ? prev.map((r) => (r.id === row.id ? { ...r, ...row } : r))
-              : [row, ...prev];
-
-            const filtered = next.filter(isVisibleToMe);
-            const normalized = normalizeReports(filtered);
-
-            if (markNew) {
-              setNewReportId(row.id);
-              setTimeout(() => setNewReportId(null), 3000);
-            }
-
-            return normalized;
-          });
-        };
-
-        const removeRow = (id) => {
-          if (!id) return;
-          setReports((prev) => prev.filter((r) => r.id !== id));
-        };
-
-        // Listener 1: pending changes (but show only unassigned)
-        channel.on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "reports",
-            filter: "status=eq.pending",
-          },
-          (payload) => {
-            if (!mountedRef.current) return;
-            const { eventType, new: newRow, old: oldRow } = payload;
-
-            if (eventType === "DELETE") {
-              removeRow(oldRow?.id);
-              return;
-            }
-
-            // show only truly unassigned pending
-            if (
-              newRow?.status === "pending" &&
-              !newRow?.assigned_volunteer_id
-            ) {
-              upsertRow(newRow, eventType === "INSERT");
-            } else {
-              // pending got assigned -> remove from public list
-              removeRow(newRow?.id);
-            }
-          },
-        );
-
-        // Listener 2: my cases (assigned to me, any status)
-        channel.on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "reports",
-            filter: `assigned_volunteer_id=eq.${volunteerUuid}`,
-          },
-          (payload) => {
-            if (!mountedRef.current) return;
-            const { eventType, new: newRow, old: oldRow } = payload;
-
-            if (eventType === "DELETE") {
-              removeRow(oldRow?.id);
-              return;
-            }
-
-            if (eventType === "UPDATE") {
-              // if moved from in_progress -> completed, show banner (it will disappear from "all")
-              const prevRow = reports.find((r) => r.id === newRow?.id);
-              if (
-                prevRow?.status === "in_progress" &&
-                newRow?.status === "completed"
-              ) {
-                bumpJustCompleted();
-              }
-            }
-
-            if (newRow) upsertRow(newRow, false);
-          },
-        );
-
-        channel.subscribe((status, err) => {
-          if (!mountedRef.current) return;
-
-          console.log("📡 Subscription status:", status);
-
-          // ignore CLOSED caused by our own cleanup
-          if (status === "CLOSED" && intentionalCloseRef.current) return;
-
-          setRealtimeStatus(status);
-
-          if (status === "SUBSCRIBED") {
-            retryAttemptRef.current = 0;
-            connectLockRef.current = false;
-            return;
-          }
-
-          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-            connectLockRef.current = false;
-            scheduleReconnect(`status:${status}:${reason}`);
-            return;
-          }
-
-          if (status === "CLOSED") {
-            connectLockRef.current = false;
-            // if unexpected close, reconnect
-            if (!intentionalCloseRef.current)
-              scheduleReconnect(`status:CLOSED:${reason}`);
-          }
-        });
-
-        channelRef.current = channel;
-        console.log("✅ Realtime setup requested");
-      } catch (e) {
-        console.log("❌ connectRealtime error:", e);
-        connectLockRef.current = false;
-        setRealtimeStatus("disconnected");
-        scheduleReconnect(`exception:${reason}`);
-      }
-    },
-    [
-      userId,
-      volunteerUuid,
-      cleanupRealtime,
-      getToken,
-      isVisibleToMe,
-      normalizeReports,
-      scheduleReconnect,
-      bumpJustCompleted,
-      reports,
-    ],
-  );
-
-  /* -------------------------- Init -------------------------- */
-  useEffect(() => {
-    mountedRef.current = true;
-
-    const init = async () => {
-      if (!userId) return;
-
-      setLoading(true);
-
-      // Load once + resolve volunteerUuid
-      await loadReports({ freshToken: false });
-
-      // Ensure volunteerUuid exists before connecting
-      if (!volunteerUuid) {
-        const supabase = await getSupabase(true);
-        if (supabase) {
-          const vu = await resolveVolunteerUuid(supabase);
-          if (vu) setVolunteerUuid(vu);
-        }
-      }
-
-      setLoading(false);
-    };
-
-    init();
-
-    return () => {
-      mountedRef.current = false;
-      clearTimer(justCompletedTimerRef);
-      clearTimer(retryTimerRef);
-      cleanupRealtime();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]);
-
-  // Connect realtime after volunteerUuid ready (run once per uuid)
-  useEffect(() => {
-    if (!userId) return;
-    if (!volunteerUuid) return;
-
-    if (isInitializedRef.current) return;
-    isInitializedRef.current = true;
-
-    connectRealtime({ force: true, reason: "init" });
-  }, [userId, volunteerUuid, connectRealtime]);
-
-  /* -------------------------- Focus Reconnect -------------------------- */
-  useFocusEffect(
-    useCallback(() => {
-      if (!userId || !volunteerUuid) return;
-
-      // refresh list (optional)
-      loadReports({ freshToken: false });
-
-      const shouldReconnect =
-        realtimeStatus !== "SUBSCRIBED" &&
-        realtimeStatus !== "CONNECTING" &&
-        !connectLockRef.current;
-
-      if (shouldReconnect) {
-        connectRealtime({ force: true, reason: "focus" });
-      }
-
-      return () => {};
-    }, [userId, volunteerUuid, realtimeStatus, loadReports, connectRealtime]),
-  );
-
-  /* -------------------------- UI Helpers -------------------------- */
-  useEffect(() => {
-    if (realtimeStatus === "SUBSCRIBED") {
-      const animation = Animated.loop(
-        Animated.sequence([
-          Animated.timing(pulseAnim, {
-            toValue: 1.2,
-            duration: 1000,
-            useNativeDriver: true,
-          }),
-          Animated.timing(pulseAnim, {
-            toValue: 1,
-            duration: 1000,
-            useNativeDriver: true,
-          }),
-        ]),
-      );
-      animation.start();
-      return () => animation.stop();
-    }
-  }, [realtimeStatus, pulseAnim]);
-
-  const handleRefresh = async () => {
-    setLoading(true);
-    await loadReports({ freshToken: false });
-    setLoading(false);
-
-    if (realtimeStatus !== "SUBSCRIBED") {
-      connectRealtime({ force: true, reason: "pull_to_refresh" });
-    }
-  };
-
-  const filters = useMemo(() => {
-    const pendingCount = reports.filter((r) => r.status === "pending").length;
-    const activeCount = reports.filter(
-      (r) => r.status === "in_progress",
-    ).length;
-    const completedCount = reports.filter(
-      (r) => r.status === "completed",
-    ).length;
-
-    return [
-      { id: "all", label: "ทั้งหมด", count: pendingCount + activeCount }, // hide completed in all
-      { id: "pending", label: "รอดำเนินการ", count: pendingCount },
-      { id: "in_progress", label: "กำลังทำ", count: activeCount },
-      { id: "completed", label: "เสร็จสิ้น", count: completedCount },
-    ];
-  }, [reports]);
-
-  const getStatusStyle = (status) => {
-    switch (status) {
-      case "pending":
-        return {
-          bg: "#fee2e2",
-          text: "#dc2626",
-          icon: "alert-circle",
-          label: "รอดำเนินการ",
-        };
-      case "in_progress":
-        return {
-          bg: "#dcfce7",
-          text: "#16a34a",
-          icon: "sync",
-          label: "กำลังดำเนินการ",
-        };
-      case "completed":
-        return {
-          bg: "#dbeafe",
-          text: "#2563eb",
-          icon: "checkmark-circle",
-          label: "เสร็จสิ้น",
-        };
-      default:
-        return {
-          bg: "#f1f5f9",
-          text: "#64748b",
-          icon: "help-circle",
-          label: "ไม่ทราบสถานะ",
-        };
-    }
-  };
-
-  const getTimeAgo = (dateString) => {
-    const now = new Date();
-    const past = new Date(dateString);
-    const diffMs = now - past;
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffMins < 1) return "เมื่อสักครู่";
-    if (diffMins < 60) return `${diffMins} นาทีที่แล้ว`;
-    if (diffHours < 24) return `${diffHours} ชั่วโมงที่แล้ว`;
-    if (diffDays < 7) return `${diffDays} วันที่แล้ว`;
-    return past.toLocaleDateString("th-TH");
-  };
-
-  const filteredReports = reports.filter((report) => {
-    if (selectedFilter === "all") {
-      if (report.status === "completed") return false;
-    } else {
-      if (report.status !== selectedFilter) return false;
-    }
-
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      return (
-        report.animal_type?.toLowerCase().includes(q) ||
-        report.detail?.toLowerCase().includes(q) ||
-        report.location?.toLowerCase().includes(q)
-      );
-    }
-
-    return true;
-  });
-
-  const getConnectionStatusColor = () => {
-    switch (realtimeStatus) {
-      case "SUBSCRIBED":
-        return "#16a34a";
-      case "CHANNEL_ERROR":
-      case "TIMED_OUT":
-        return "#dc2626";
-      default:
-        return "#94a3b8";
-    }
-  };
-
-  const getConnectionStatusText = () => {
-    switch (realtimeStatus) {
-      case "SUBSCRIBED":
-        return "เชื่อมต่อแล้ว";
-      case "CHANNEL_ERROR":
-        return "เกิดข้อผิดพลาด";
-      case "TIMED_OUT":
-        return "หมดเวลา";
-      case "CLOSED":
-        return "ปิดการเชื่อมต่อ";
-      case "CONNECTING":
-        return "กำลังเชื่อมต่อ...";
-      default:
-        return "กำลังเชื่อมต่อ...";
-    }
-  };
-
-  const renderHeader = () => (
+function toTime(v) {
+  const t = new Date(v || 0).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+/**
+ * Upsert item into a list already sorted by created_at desc (newest first)
+ * - If exists: remove old index, then insert at correct position (binary search)
+ * - If new: insert at correct position
+ */
+function upsertSortedByCreatedAtDesc(list, item) {
+  const id = item?.id;
+  if (!id) return list;
+
+  const createdAt = toTime(item.created_at);
+
+  // remove existing
+  let arr = list;
+  const idx = arr.findIndex((x) => x.id === id);
+  if (idx !== -1) {
+    // update data by merge
+    const merged = { ...arr[idx], ...item };
+    arr = [...arr.slice(0, idx), ...arr.slice(idx + 1)];
+    item = merged;
+  }
+
+  // binary search insert position
+  let lo = 0;
+  let hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    const midTime = toTime(arr[mid]?.created_at);
+    // want desc => bigger time goes earlier
+    if (createdAt > midTime) hi = mid;
+    else lo = mid + 1;
+  }
+  // insert
+  const next = [...arr.slice(0, lo), item, ...arr.slice(lo)];
+  return next;
+}
+
+/* -------------------------- Header (memo) -------------------------- */
+const Header = memo(function Header({
+  filters,
+  selectedFilter,
+  setSelectedFilter,
+  realtimeStatus,
+  pulseAnim,
+  getConnectionStatusColor,
+  getConnectionStatusText,
+  justCompletedCount,
+  clearJustCompletedBanner,
+}) {
+  return (
     <View style={styles.header}>
       <View style={styles.titleContainer}>
         <View style={styles.titleRow}>
@@ -696,13 +145,17 @@ export default function VolunteerReports() {
 
       <View style={styles.filterContainer}>
         {filters.map((filter) => (
-          <TouchableOpacity
+          <Pressable
             key={filter.id}
-            style={[
+            onPress={() => setSelectedFilter(filter.id)}
+            hitSlop={12}
+            pressRetentionOffset={20}
+            android_disableSound
+            style={({ pressed }) => [
               styles.filterTab,
               selectedFilter === filter.id && styles.filterTabActive,
+              pressed && { opacity: 0.9 },
             ]}
-            onPress={() => setSelectedFilter(filter.id)}
           >
             <Text
               style={[
@@ -727,132 +180,726 @@ export default function VolunteerReports() {
                 {filter.count}
               </Text>
             </View>
-          </TouchableOpacity>
+          </Pressable>
         ))}
       </View>
     </View>
   );
+});
 
-  const renderItem = ({ item }) => {
-    const statusStyle = getStatusStyle(item.status);
-    const isNew = newReportId === item.id;
+export default function VolunteerReports() {
+  const router = useRouter();
+  const { getToken } = useAuth();
+  const { user } = useUser();
+  const userId = user?.id;
 
-    return (
-      <TouchableOpacity
-        style={[
-          styles.card,
-          item.status === "pending" && styles.cardUrgent,
-          isNew && styles.cardNew,
-        ]}
-        onPress={() =>
-          router.push({
-            pathname: "/volunteer/report-detail",
-            params: { id: item.id },
-          })
+  // 🔥 เปลี่ยน: เก็บรายการเป็น array เดียวเหมือนเดิม แต่ update แบบไม่ sort ทั้งกอง
+  const [reports, setReports] = useState([]);
+
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedFilter, setSelectedFilter] = useState("all");
+  const [realtimeStatus, setRealtimeStatus] = useState("disconnected");
+  const [newReportId, setNewReportId] = useState(null);
+
+  const [volunteerUuid, setVolunteerUuid] = useState(null);
+
+  const [justCompletedCount, setJustCompletedCount] = useState(0);
+  const justCompletedTimerRef = useRef(null);
+
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+
+  const mountedRef = useRef(true);
+  const isInitializedRef = useRef(false);
+
+  const realtimeClientRef = useRef(null);
+  const channelRef = useRef(null);
+
+  const cleanupInProgressRef = useRef(false);
+  const connectLockRef = useRef(false);
+  const intentionalCloseRef = useRef(false);
+
+  const retryAttemptRef = useRef(0);
+  const retryTimerRef = useRef(null);
+
+  // ✅ batch realtime updates กันยิง setState ถี่
+  const pendingOpsRef = useRef([]);
+  const flushRafRef = useRef(null);
+
+  /* --------------------------- Timers ---------------------------- */
+  const clearTimer = useCallback((ref) => {
+    if (ref.current) {
+      clearTimeout(ref.current);
+      ref.current = null;
+    }
+  }, []);
+
+  const clearJustCompletedBanner = useCallback(() => {
+    clearTimer(justCompletedTimerRef);
+    setJustCompletedCount(0);
+  }, [clearTimer]);
+
+  const bumpJustCompleted = useCallback(() => {
+    setJustCompletedCount((c) => c + 1);
+    clearTimer(justCompletedTimerRef);
+    justCompletedTimerRef.current = setTimeout(() => {
+      setJustCompletedCount(0);
+      justCompletedTimerRef.current = null;
+    }, 2500);
+  }, [clearTimer]);
+
+  /* -------------------------- Token/Supabase -------------------------- */
+  const getSupabase = useCallback(
+    async (fresh = false) => {
+      const token = fresh
+        ? await getToken({ template: "supabase", skipCache: true })
+        : await getToken({ template: "supabase" });
+      if (!token) return null;
+      return createClerkSupabaseClient(token);
+    },
+    [getToken],
+  );
+
+  const resolveVolunteerUuid = useCallback(
+    async (supabase) => {
+      if (!supabase || !userId) return null;
+      const { data: me, error } = await supabase
+        .from("users")
+        .select("id")
+        .eq("clerk_id", userId)
+        .single();
+      if (error || !me?.id) return null;
+      return me.id;
+    },
+    [userId],
+  );
+
+  /* -------------------- Visibility Rules -------------------- */
+  const isVisibleToMe = useCallback(
+    (r) => {
+      if (!r) return false;
+      if (r.status === "pending") return !r.assigned_volunteer_id;
+      return !!volunteerUuid && r.assigned_volunteer_id === volunteerUuid;
+    },
+    [volunteerUuid],
+  );
+
+  /* -------------------------- Fast Upsert/Remove -------------------------- */
+  const enqueueOp = useCallback(
+    (op) => {
+      pendingOpsRef.current.push(op);
+      if (flushRafRef.current) return;
+
+      flushRafRef.current = requestAnimationFrame(() => {
+        flushRafRef.current = null;
+        const ops = pendingOpsRef.current;
+        pendingOpsRef.current = [];
+
+        if (!ops.length) return;
+
+        setReports((prev) => {
+          let next = prev;
+
+          for (const x of ops) {
+            if (x.type === "remove") {
+              const id = x.id;
+              if (!id) continue;
+              if (next === prev) next = prev;
+              next = next.filter((r) => r.id !== id);
+            } else if (x.type === "upsert") {
+              const row = x.row;
+              if (!row?.id) continue;
+              // visibility gate
+              if (!isVisibleToMe(row)) {
+                next = next.filter((r) => r.id !== row.id);
+                continue;
+              }
+              next = upsertSortedByCreatedAtDesc(next, row);
+            }
+          }
+
+          return next;
+        });
+      });
+    },
+    [isVisibleToMe],
+  );
+
+  /* -------------------------- Load Reports -------------------------- */
+  const loadReports = useCallback(
+    async ({ freshToken = false } = {}) => {
+      try {
+        if (!userId) return;
+
+        const supabase = await getSupabase(freshToken);
+        if (!supabase) return;
+
+        let vu = volunteerUuid;
+        if (!vu) {
+          vu = await resolveVolunteerUuid(supabase);
+          if (!vu) return;
+          setVolunteerUuid(vu);
         }
-        activeOpacity={0.7}
-      >
-        {isNew && (
-          <View style={styles.newBadge}>
-            <Ionicons name="sparkles" size={12} color="#fff" />
-            <Text style={styles.newBadgeText}>ใหม่</Text>
-          </View>
-        )}
 
-        <View style={styles.cardHeader}>
-          <View style={styles.cardHeaderLeft}>
-            <View
-              style={[
-                styles.animalBadge,
-                {
-                  backgroundColor:
-                    item.animal_type === "สุนัข" ? "#dbeafe" : "#fce7f3",
-                },
-              ]}
-            >
-              <Ionicons
-                name={item.animal_type === "สุนัข" ? "paw" : "fish"}
-                size={16}
-                color={item.animal_type === "สุนัข" ? "#2563eb" : "#ec4899"}
-              />
-            </View>
-            <Text style={styles.animalType}>{item.animal_type}</Text>
-          </View>
+        const [pendingRes, mineRes] = await Promise.all([
+          supabase
+            .from("reports")
+            .select("*")
+            .eq("status", "pending")
+            .is("assigned_volunteer_id", null)
+            .order("created_at", { ascending: false }),
+          supabase
+            .from("reports")
+            .select("*")
+            .eq("assigned_volunteer_id", vu)
+            .order("created_at", { ascending: false }),
+        ]);
 
-          <View
-            style={[styles.statusBadge, { backgroundColor: statusStyle.bg }]}
-          >
-            <Ionicons
-              name={statusStyle.icon}
-              size={12}
-              color={statusStyle.text}
-            />
-            <Text style={[styles.statusTextBadge, { color: statusStyle.text }]}>
-              {statusStyle.label}
-            </Text>
-          </View>
-        </View>
+        if (pendingRes.error) throw pendingRes.error;
+        if (mineRes.error) throw mineRes.error;
 
-        <Text style={styles.cardTitle} numberOfLines={2}>
-          {item.detail || "ไม่มีรายละเอียด"}
-        </Text>
+        // server already ordered desc; แค่ merge + upsert แบบแทรก (ไม่ sort ทั้งกอง)
+        let merged = [];
+        for (const r of [...(pendingRes.data || []), ...(mineRes.data || [])]) {
+          merged = upsertSortedByCreatedAtDesc(merged, r);
+        }
+        setReports(merged);
+      } catch (e) {
+        console.log("❌ loadReports error:", e);
+      }
+    },
+    [userId, getSupabase, volunteerUuid, resolveVolunteerUuid],
+  );
 
-        <View style={styles.locationRow}>
-          <Ionicons name="location" size={16} color="#64748b" />
-          <Text style={styles.locationText} numberOfLines={1}>
-            {item.location || "ไม่ระบุตำแหน่ง"}
-          </Text>
-        </View>
+  /* -------------------------- Realtime Cleanup -------------------------- */
+  const cleanupRealtime = useCallback(async () => {
+    if (cleanupInProgressRef.current) return;
+    cleanupInProgressRef.current = true;
 
-        <View style={styles.infoRow}>
-          <View style={styles.infoItem}>
-            <Ionicons name="time-outline" size={14} color="#94a3b8" />
-            <Text style={styles.infoText}>{getTimeAgo(item.created_at)}</Text>
-          </View>
+    try {
+      intentionalCloseRef.current = true;
+      clearTimer(retryTimerRef);
 
-          {item.latitude && item.longitude && (
-            <>
-              <View style={styles.infoDivider} />
-              <View style={styles.infoItem}>
-                <Ionicons name="navigate-outline" size={14} color="#94a3b8" />
-                <Text style={styles.infoText}>มีพิกัด GPS</Text>
-              </View>
-            </>
-          )}
-        </View>
+      if (realtimeClientRef.current && channelRef.current) {
+        await realtimeClientRef.current.removeChannel(channelRef.current);
+      }
+    } catch (e) {
+      console.log("cleanupRealtime error:", e);
+    } finally {
+      channelRef.current = null;
+      realtimeClientRef.current = null;
+      cleanupInProgressRef.current = false;
 
-        {item.assigned_volunteer_id && (
-          <View style={styles.assignedRow}>
-            <Ionicons name="person" size={14} color="#8b5cf6" />
-            <Text style={styles.assignedText}>
-              {item.status === "pending"
-                ? "ยังไม่มีผู้รับผิดชอบ"
-                : "เป็นเคสของคุณ"}
-            </Text>
-          </View>
-        )}
+      setTimeout(() => {
+        intentionalCloseRef.current = false;
+      }, 0);
+    }
+  }, [clearTimer]);
 
-        <View style={styles.cardFooter}>
-          <TouchableOpacity style={styles.actionButton}>
-            <Text style={styles.actionButtonText}>ดูรายละเอียด</Text>
-            <Ionicons name="arrow-forward" size={16} color="#8b5cf6" />
-          </TouchableOpacity>
-        </View>
-      </TouchableOpacity>
-    );
+  /* -------------------------- Reconnect Backoff -------------------------- */
+  const scheduleReconnect = useCallback(
+    (reason = "unknown") => {
+      if (!mountedRef.current) return;
+
+      const attempt = retryAttemptRef.current + 1;
+      retryAttemptRef.current = attempt;
+
+      const base = clamp(900 * Math.pow(1.8, attempt - 1), 900, 12000);
+      const waitMs = jitter(base, 0.25);
+
+      clearTimer(retryTimerRef);
+      retryTimerRef.current = setTimeout(() => {
+        if (!mountedRef.current) return;
+        if (
+          realtimeStatus !== "SUBSCRIBED" &&
+          realtimeStatus !== "CONNECTING" &&
+          !connectLockRef.current
+        ) {
+          connectRealtime({ force: true, reason });
+        }
+      }, waitMs);
+    },
+    [clearTimer, realtimeStatus],
+  );
+
+  /* -------------------------- Realtime Connect -------------------------- */
+  const connectRealtime = useCallback(
+    async ({ force = false, reason = "manual" } = {}) => {
+      try {
+        if (!userId) return;
+        if (!volunteerUuid) return;
+
+        if (connectLockRef.current && !force) return;
+        connectLockRef.current = true;
+
+        setRealtimeStatus("CONNECTING");
+        await cleanupRealtime();
+
+        const token = await getToken({ template: "supabase", skipCache: true });
+        if (!token) {
+          setRealtimeStatus("disconnected");
+          connectLockRef.current = false;
+          return;
+        }
+
+        const realtime = getRealtimeClient(token);
+        realtimeClientRef.current = realtime;
+
+        const channel = realtime.channel(`reports-${volunteerUuid}`, {
+          config: { broadcast: { self: false } },
+        });
+
+        // Listener 1: pending changes (show only unassigned)
+        channel.on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "reports",
+            filter: "status=eq.pending",
+          },
+          (payload) => {
+            if (!mountedRef.current) return;
+            const { eventType, new: newRow, old: oldRow } = payload;
+
+            if (eventType === "DELETE") {
+              enqueueOp({ type: "remove", id: oldRow?.id });
+              return;
+            }
+
+            if (
+              newRow?.status === "pending" &&
+              !newRow?.assigned_volunteer_id
+            ) {
+              enqueueOp({ type: "upsert", row: newRow });
+              if (eventType === "INSERT") {
+                setNewReportId(newRow.id);
+                setTimeout(() => setNewReportId(null), 2500);
+              }
+            } else {
+              // pending got assigned -> remove from public list
+              enqueueOp({ type: "remove", id: newRow?.id });
+            }
+          },
+        );
+
+        // Listener 2: my cases
+        channel.on(
+          "postgres_changes",
+          {
+            event: "*",
+            schema: "public",
+            table: "reports",
+            filter: `assigned_volunteer_id=eq.${volunteerUuid}`,
+          },
+          (payload) => {
+            if (!mountedRef.current) return;
+            const { eventType, new: newRow, old: oldRow } = payload;
+
+            if (eventType === "DELETE") {
+              enqueueOp({ type: "remove", id: oldRow?.id });
+              return;
+            }
+
+            if (eventType === "UPDATE") {
+              // ✅ อ่าน prev ผ่าน setReports เพื่อกัน stale และไม่ต้องพึ่ง reports state
+              setReports((prev) => {
+                const prevRow = prev.find((r) => r.id === newRow?.id);
+                if (
+                  prevRow?.status === "in_progress" &&
+                  newRow?.status === "completed"
+                ) {
+                  bumpJustCompleted();
+                }
+                return prev;
+              });
+            }
+
+            if (newRow) enqueueOp({ type: "upsert", row: newRow });
+          },
+        );
+
+        channel.subscribe((status) => {
+          if (!mountedRef.current) return;
+          if (status === "CLOSED" && intentionalCloseRef.current) return;
+
+          setRealtimeStatus(status);
+
+          if (status === "SUBSCRIBED") {
+            retryAttemptRef.current = 0;
+            connectLockRef.current = false;
+            return;
+          }
+
+          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+            connectLockRef.current = false;
+            scheduleReconnect(`status:${status}:${reason}`);
+            return;
+          }
+
+          if (status === "CLOSED") {
+            connectLockRef.current = false;
+            if (!intentionalCloseRef.current)
+              scheduleReconnect(`status:CLOSED:${reason}`);
+          }
+        });
+
+        channelRef.current = channel;
+      } catch (e) {
+        console.log("❌ connectRealtime error:", e);
+        connectLockRef.current = false;
+        setRealtimeStatus("disconnected");
+        scheduleReconnect(`exception:${reason}`);
+      }
+    },
+    [
+      userId,
+      volunteerUuid,
+      cleanupRealtime,
+      getToken,
+      scheduleReconnect,
+      bumpJustCompleted,
+      enqueueOp,
+    ],
+  );
+
+  /* -------------------------- Init -------------------------- */
+  useEffect(() => {
+    mountedRef.current = true;
+
+    const init = async () => {
+      if (!userId) return;
+
+      setLoading(true);
+      await loadReports({ freshToken: false });
+
+      if (!volunteerUuid) {
+        const supabase = await getSupabase(true);
+        if (supabase) {
+          const vu = await resolveVolunteerUuid(supabase);
+          if (vu) setVolunteerUuid(vu);
+        }
+      }
+
+      setLoading(false);
+    };
+
+    init();
+
+    return () => {
+      mountedRef.current = false;
+      clearTimer(justCompletedTimerRef);
+      clearTimer(retryTimerRef);
+      if (flushRafRef.current) cancelAnimationFrame(flushRafRef.current);
+      flushRafRef.current = null;
+      pendingOpsRef.current = [];
+      cleanupRealtime();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
+  useEffect(() => {
+    if (!userId) return;
+    if (!volunteerUuid) return;
+    if (isInitializedRef.current) return;
+    isInitializedRef.current = true;
+
+    connectRealtime({ force: true, reason: "init" });
+  }, [userId, volunteerUuid, connectRealtime]);
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!userId || !volunteerUuid) return;
+
+      loadReports({ freshToken: false });
+
+      const shouldReconnect =
+        realtimeStatus !== "SUBSCRIBED" &&
+        realtimeStatus !== "CONNECTING" &&
+        !connectLockRef.current;
+
+      if (shouldReconnect) {
+        connectRealtime({ force: true, reason: "focus" });
+      }
+
+      return () => {};
+    }, [userId, volunteerUuid, realtimeStatus, loadReports, connectRealtime]),
+  );
+
+  /* -------------------------- UI Helpers -------------------------- */
+  useEffect(() => {
+    if (realtimeStatus === "SUBSCRIBED") {
+      const animation = Animated.loop(
+        Animated.sequence([
+          Animated.timing(pulseAnim, {
+            toValue: 1.2,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+          Animated.timing(pulseAnim, {
+            toValue: 1,
+            duration: 1000,
+            useNativeDriver: true,
+          }),
+        ]),
+      );
+      animation.start();
+      return () => animation.stop();
+    }
+  }, [realtimeStatus, pulseAnim]);
+
+  const handleRefresh = async () => {
+    setLoading(true);
+    await loadReports({ freshToken: false });
+    setLoading(false);
+
+    if (realtimeStatus !== "SUBSCRIBED") {
+      connectRealtime({ force: true, reason: "pull_to_refresh" });
+    }
   };
 
-  const renderEmpty = () => (
-    <View style={styles.emptyContainer}>
-      <View style={styles.emptyIcon}>
-        <Ionicons name="document-text-outline" size={64} color="#cbd5e1" />
-      </View>
-      <Text style={styles.emptyTitle}>ไม่พบรายงาน</Text>
-      <Text style={styles.emptyDesc}>
-        ไม่มีเคสที่รอคนรับ หรือเคสของคุณในขณะนี้
-      </Text>
-    </View>
+  const filters = useMemo(() => {
+    let pendingCount = 0;
+    let activeCount = 0;
+    let completedCount = 0;
+    for (const r of reports) {
+      if (r.status === "pending") pendingCount++;
+      else if (r.status === "in_progress") activeCount++;
+      else if (r.status === "completed") completedCount++;
+    }
+
+    return [
+      { id: "all", label: "ทั้งหมด", count: pendingCount + activeCount },
+      { id: "pending", label: "รอดำเนินการ", count: pendingCount },
+      { id: "in_progress", label: "กำลังทำ", count: activeCount },
+      { id: "completed", label: "เสร็จสิ้น", count: completedCount },
+    ];
+  }, [reports]);
+
+  const getStatusStyle = (status) => {
+    switch (status) {
+      case "pending":
+        return {
+          bg: "#fee2e2",
+          text: "#dc2626",
+          icon: "alert-circle",
+          label: "รอดำเนินการ",
+        };
+      case "in_progress":
+        return {
+          bg: "#dcfce7",
+          text: "#16a34a",
+          icon: "sync",
+          label: "กำลังดำเนินการ",
+        };
+      case "completed":
+        return {
+          bg: "#dbeafe",
+          text: "#2563eb",
+          icon: "checkmark-circle",
+          label: "เสร็จสิ้น",
+        };
+      default:
+        return {
+          bg: "#f1f5f9",
+          text: "#64748b",
+          icon: "help-circle",
+          label: "ไม่ทราบสถานะ",
+        };
+    }
+  };
+
+  const getTimeAgo = (dateString) => {
+    const now = new Date();
+    const past = new Date(dateString);
+    const diffMs = now - past;
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) return "เมื่อสักครู่";
+    if (diffMins < 60) return `${diffMins} นาทีที่แล้ว`;
+    if (diffHours < 24) return `${diffHours} ชั่วโมงที่แล้ว`;
+    if (diffDays < 7) return `${diffDays} วันที่แล้ว`;
+    return past.toLocaleDateString("th-TH");
+  };
+
+  const filteredReports = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase();
+    return reports.filter((report) => {
+      if (selectedFilter === "all") {
+        if (report.status === "completed") return false;
+      } else {
+        if (report.status !== selectedFilter) return false;
+      }
+
+      if (q) {
+        return (
+          report.animal_type?.toLowerCase().includes(q) ||
+          report.detail?.toLowerCase().includes(q) ||
+          report.location?.toLowerCase().includes(q)
+        );
+      }
+      return true;
+    });
+  }, [reports, selectedFilter, searchQuery]);
+
+  const getConnectionStatusColor = useCallback(() => {
+    switch (realtimeStatus) {
+      case "SUBSCRIBED":
+        return "#16a34a";
+      case "CHANNEL_ERROR":
+      case "TIMED_OUT":
+        return "#dc2626";
+      default:
+        return "#94a3b8";
+    }
+  }, [realtimeStatus]);
+
+  const getConnectionStatusText = useCallback(() => {
+    switch (realtimeStatus) {
+      case "SUBSCRIBED":
+        return "เชื่อมต่อแล้ว";
+      case "CHANNEL_ERROR":
+        return "เกิดข้อผิดพลาด";
+      case "TIMED_OUT":
+        return "หมดเวลา";
+      case "CLOSED":
+        return "ปิดการเชื่อมต่อ";
+      case "CONNECTING":
+        return "กำลังเชื่อมต่อ...";
+      default:
+        return "กำลังเชื่อมต่อ...";
+    }
+  }, [realtimeStatus]);
+
+  const renderItem = useCallback(
+    ({ item }) => {
+      const statusStyle = getStatusStyle(item.status);
+      const isNew = newReportId === item.id;
+
+      return (
+        <TouchableOpacity
+          style={[
+            styles.card,
+            item.status === "pending" && styles.cardUrgent,
+            isNew && styles.cardNew,
+          ]}
+          onPress={() =>
+            router.push({
+              pathname: "/volunteer/report-detail",
+              params: { id: item.id },
+            })
+          }
+          activeOpacity={0.7}
+        >
+          {isNew && (
+            <View style={styles.newBadge}>
+              <Ionicons name="sparkles" size={12} color="#fff" />
+              <Text style={styles.newBadgeText}>ใหม่</Text>
+            </View>
+          )}
+
+          <View style={styles.cardHeader}>
+            <View style={styles.cardHeaderLeft}>
+              <View
+                style={[
+                  styles.animalBadge,
+                  {
+                    backgroundColor:
+                      item.animal_type === "สุนัข" ? "#dbeafe" : "#fce7f3",
+                  },
+                ]}
+              >
+                <Ionicons
+                  name={item.animal_type === "สุนัข" ? "paw" : "fish"}
+                  size={16}
+                  color={item.animal_type === "สุนัข" ? "#2563eb" : "#ec4899"}
+                />
+              </View>
+              <Text style={styles.animalType}>{item.animal_type}</Text>
+            </View>
+
+            <View
+              style={[styles.statusBadge, { backgroundColor: statusStyle.bg }]}
+            >
+              <Ionicons
+                name={statusStyle.icon}
+                size={12}
+                color={statusStyle.text}
+              />
+              <Text
+                style={[styles.statusTextBadge, { color: statusStyle.text }]}
+              >
+                {statusStyle.label}
+              </Text>
+            </View>
+          </View>
+
+          <Text style={styles.cardTitle} numberOfLines={2}>
+            {item.detail || "ไม่มีรายละเอียด"}
+          </Text>
+
+          <View style={styles.locationRow}>
+            <Ionicons name="location" size={16} color="#64748b" />
+            <Text style={styles.locationText} numberOfLines={1}>
+              {item.location || "ไม่ระบุตำแหน่ง"}
+            </Text>
+          </View>
+
+          <View style={styles.infoRow}>
+            <View style={styles.infoItem}>
+              <Ionicons name="time-outline" size={14} color="#94a3b8" />
+              <Text style={styles.infoText}>{getTimeAgo(item.created_at)}</Text>
+            </View>
+
+            {item.latitude && item.longitude && (
+              <>
+                <View style={styles.infoDivider} />
+                <View style={styles.infoItem}>
+                  <Ionicons name="navigate-outline" size={14} color="#94a3b8" />
+                  <Text style={styles.infoText}>มีพิกัด GPS</Text>
+                </View>
+              </>
+            )}
+          </View>
+
+          {item.assigned_volunteer_id && (
+            <View style={styles.assignedRow}>
+              <Ionicons name="person" size={14} color="#8b5cf6" />
+              <Text style={styles.assignedText}>
+                {item.status === "pending"
+                  ? "ยังไม่มีผู้รับผิดชอบ"
+                  : "เป็นเคสของคุณ"}
+              </Text>
+            </View>
+          )}
+
+          <View style={styles.cardFooter}>
+            <TouchableOpacity style={styles.actionButton} activeOpacity={0.85}>
+              <Text style={styles.actionButtonText}>ดูรายละเอียด</Text>
+              <Ionicons name="arrow-forward" size={16} color="#8b5cf6" />
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      );
+    },
+    [newReportId, router],
   );
+
+  const renderEmpty = useCallback(() => {
+    return (
+      <View style={styles.emptyContainer}>
+        <View style={styles.emptyIcon}>
+          <Ionicons name="document-text-outline" size={64} color="#cbd5e1" />
+        </View>
+        <Text style={styles.emptyTitle}>ไม่พบรายงาน</Text>
+        <Text style={styles.emptyDesc}>
+          ไม่มีเคสที่รอคนรับ หรือเคสของคุณในขณะนี้
+        </Text>
+      </View>
+    );
+  }, []);
 
   if (loading && !isInitializedRef.current) {
     return (
@@ -869,17 +916,43 @@ export default function VolunteerReports() {
         data={filteredReports}
         keyExtractor={(item) => item.id.toString()}
         renderItem={renderItem}
-        ListHeaderComponent={renderHeader}
+        ListHeaderComponent={
+          <Header
+            filters={filters}
+            selectedFilter={selectedFilter}
+            setSelectedFilter={setSelectedFilter}
+            realtimeStatus={realtimeStatus}
+            pulseAnim={pulseAnim}
+            getConnectionStatusColor={getConnectionStatusColor}
+            getConnectionStatusText={getConnectionStatusText}
+            justCompletedCount={justCompletedCount}
+            clearJustCompletedBanner={clearJustCompletedBanner}
+          />
+        }
         ListEmptyComponent={renderEmpty}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
         refreshing={loading}
         onRefresh={handleRefresh}
+        extraData={{
+          selectedFilter,
+          searchQuery,
+          justCompletedCount,
+          realtimeStatus,
+          newReportId,
+        }}
+        keyboardShouldPersistTaps="handled"
+        removeClippedSubviews={false}
+        initialNumToRender={8}
+        windowSize={7}
+        maxToRenderPerBatch={8}
+        updateCellsBatchingPeriod={50}
       />
     </View>
   );
 }
 
+/* -------------------------- Styles -------------------------- */
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f8fafc" },
 
@@ -906,6 +979,7 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 3,
     marginBottom: 16,
+    zIndex: 10,
   },
 
   titleContainer: { marginBottom: 16 },

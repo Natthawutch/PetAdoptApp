@@ -1,403 +1,422 @@
+import { useAuth } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { FlatList, RefreshControl, StyleSheet, Text, View } from "react-native";
+import { createClerkSupabaseClient } from "../../../config/supabaseClient";
+import { fetchDashboardStats } from "../../../lib/dashboardApi";
+
+const buildStats = (s = {}) => [
+  {
+    key: "totalUsers",
+    title: "ผู้ใช้ทั้งหมด",
+    number: s.totalUsers ?? 0,
+    icon: "people-outline",
+    color: "#3b82f6",
+    bgColor: "#dbeafe",
+  },
+  {
+    key: "volunteers",
+    title: "อาสาสมัคร",
+    number: s.volunteers ?? 0,
+    icon: "hand-left-outline",
+    color: "#ec4899",
+    bgColor: "#fce7f3",
+  },
+  {
+    key: "animalsLookingForHome",
+    title: "สัตว์กำลังหาบ้าน",
+    number: s.animalsLookingForHome ?? 0,
+    icon: "paw-outline",
+    color: "#f59e0b",
+    bgColor: "#fef3c7",
+  },
+  {
+    key: "adoptionsSuccess",
+    title: "รับเลี้ยงสำเร็จ",
+    number: s.adoptionsSuccess ?? 0,
+    icon: "heart-outline",
+    color: "#10b981",
+    bgColor: "#d1fae5",
+  },
+  {
+    key: "pendingApprovals",
+    title: "ยังไม่ได้ยืนยันตัวตน",
+    number: s.pendingApprovals ?? 0,
+    icon: "time-outline",
+    color: "#8b5cf6",
+    bgColor: "#ede9fe",
+  },
+];
+
+const Card = ({ children, style }) => (
+  <View style={[styles.card, style]}>{children}</View>
+);
+
+const SkeletonBlock = ({ h = 12, w = "100%", r = 12, style }) => (
+  <View
+    style={[styles.skeleton, { height: h, width: w, borderRadius: r }, style]}
+  />
+);
 
 export default function Dashboard() {
-  const stats = [
-    {
-      title: "จำนวนผู้ใช้ทั้งหมด",
-      number: "132",
-      icon: "people",
-      color: "#6366f1",
-      bgColor: "#eef2ff",
-      change: "+12%",
-      changeType: "up",
-    },
-    {
-      title: "อาสาสมัคร",
-      number: "23",
-      icon: "hand-left",
-      color: "#ec4899",
-      bgColor: "#fce7f3",
-      change: "+3",
-      changeType: "up",
-    },
-    {
-      title: "สัตว์กำลังหาบ้าน",
-      number: "45",
-      icon: "paw",
-      color: "#f59e0b",
-      bgColor: "#fef3c7",
-      change: "+5",
-      changeType: "up",
-    },
-    {
-      title: "การรับเลี้ยงสำเร็จ",
-      number: "28",
-      icon: "heart",
-      color: "#10b981",
-      bgColor: "#d1fae5",
-      change: "+8",
-      changeType: "up",
-    },
-    {
-      title: "รอการอนุมัติ",
-      number: "7",
-      icon: "time",
-      color: "#8b5cf6",
-      bgColor: "#ede9fe",
-      change: "2",
-      changeType: "neutral",
-    },
-  ];
+  const { getToken } = useAuth();
 
-  const quickActions = [
-    { label: "เพิ่มสัตว์", icon: "add-circle", color: "#6366f1" },
-    { label: "จัดการผู้ใช้", icon: "people-circle", color: "#8b5cf6" },
-    { label: "รายงาน", icon: "document-text", color: "#06b6d4" },
-    { label: "ตั้งค่า", icon: "settings", color: "#64748b" },
-  ];
+  const [statsData, setStatsData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
 
-  return (
-    <View style={styles.container}>
-      {/* ===== HEADER ===== */}
+  // ✅ realtime refs
+  const supabaseRef = useRef(null);
+  const channelsRef = useRef([]);
+  const reloadTimerRef = useRef(null);
+
+  const load = async () => {
+    try {
+      const token = await getToken({ template: "supabase" });
+      const stats = await fetchDashboardStats(token);
+      setStatsData(stats);
+    } catch (e) {
+      console.error("Dashboard load error:", e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ✅ debounce reload (กันยิงถี่)
+  const scheduleReload = () => {
+    if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+    reloadTimerRef.current = setTimeout(() => {
+      load();
+    }, 250);
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  // ✅ Realtime subscribe: users + pets (+ adoptions ถ้ามี)
+  useEffect(() => {
+    let alive = true;
+
+    const setupRealtime = async () => {
+      try {
+        const token = await getToken({ template: "supabase" });
+        const supabase = createClerkSupabaseClient(token);
+        supabaseRef.current = supabase;
+
+        // cleanup ของเดิม (กันซ้อน)
+        channelsRef.current.forEach((ch) => supabase.removeChannel(ch));
+        channelsRef.current = [];
+
+        const tablesToWatch = [
+          "users",
+          "pets",
+          // ถ้าคุณมีตารางอื่นที่เอาไปคิด stats ให้ใส่เพิ่ม เช่น:
+          // "adoptions",
+          // "adoption_requests",
+        ];
+
+        const newChannels = tablesToWatch.map((table) =>
+          supabase
+            .channel(`dashboard-realtime-${table}`)
+            .on(
+              "postgres_changes",
+              { event: "*", schema: "public", table },
+              () => {
+                if (!alive) return;
+                scheduleReload();
+              },
+            )
+            .subscribe(),
+        );
+
+        channelsRef.current = newChannels;
+      } catch (e) {
+        console.error("Dashboard setupRealtime error:", e);
+      }
+    };
+
+    setupRealtime();
+
+    return () => {
+      alive = false;
+      if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+
+      const supabase = supabaseRef.current;
+      if (supabase) {
+        channelsRef.current.forEach((ch) => supabase.removeChannel(ch));
+      }
+      channelsRef.current = [];
+    };
+  }, [getToken]);
+
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await load();
+    setRefreshing(false);
+  };
+
+  const stats = useMemo(() => buildStats(statsData || {}), [statsData]);
+
+  const quickStats = useMemo(() => {
+    const s = statsData || {};
+    return [
+      {
+        label: "ยังไม่ได้ยืนยันตัวตน",
+        value: s.pendingApprovals ?? 0,
+        icon: "time-outline",
+        color: "#8b5cf6",
+      },
+      {
+        label: "สัตว์กำลังหาบ้าน",
+        value: s.animalsLookingForHome ?? 0,
+        icon: "paw-outline",
+        color: "#f59e0b",
+      },
+      {
+        label: "รับเลี้ยงสำเร็จ",
+        value: s.adoptionsSuccess ?? 0,
+        icon: "heart-outline",
+        color: "#10b981",
+      },
+    ];
+  }, [statsData]);
+
+  const Content = () => (
+    <View>
       <View style={styles.header}>
-        <View>
-          <Text style={styles.greeting}>ยินดีต้อนรับ</Text>
-          <Text style={styles.title}>Dashboard</Text>
-        </View>
-
-        <Pressable style={styles.notificationBtn}>
-          <Ionicons name="notifications" size={22} color="#334155" />
-          <View style={styles.notificationDot} />
-        </Pressable>
+        <Text style={styles.headerTitle}>ภาพรวมระบบ</Text>
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false}>
-        {/* ===== STATS ===== */}
-        <View style={styles.statsSection}>
-          <Text style={styles.sectionTitle}>สถิติระบบ</Text>
-
-          {stats.map((stat, idx) => (
-            <Pressable
-              key={idx}
-              style={({ pressed }) => [
-                styles.statCard,
-                pressed && styles.statCardPressed,
-              ]}
-            >
-              <View style={styles.statCardLeft}>
-                <View
-                  style={[
-                    styles.iconContainer,
-                    { backgroundColor: stat.bgColor },
-                  ]}
-                >
-                  <Ionicons name={stat.icon} size={24} color={stat.color} />
-                </View>
-
-                <View style={styles.statInfo}>
-                  <Text style={styles.statTitle}>{stat.title}</Text>
-                  <View style={styles.statNumberRow}>
-                    <Text style={styles.statNumber}>{stat.number}</Text>
-
-                    <View
-                      style={[
-                        styles.changeBadge,
-                        stat.changeType === "up" && styles.changeBadgeUp,
-                        stat.changeType === "neutral" &&
-                          styles.changeBadgeNeutral,
-                      ]}
-                    >
-                      {stat.changeType === "up" && (
-                        <Ionicons
-                          name="trending-up"
-                          size={12}
-                          color="#10b981"
-                        />
-                      )}
-                      <Text
-                        style={[
-                          styles.changeText,
-                          stat.changeType === "up" && styles.changeTextUp,
-                        ]}
-                      >
-                        {stat.change}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-              </View>
-
-              <Ionicons name="chevron-forward" size={20} color="#cbd5e1" />
-            </Pressable>
-          ))}
-        </View>
-
-        {/* ===== QUICK ACTIONS ===== */}
-        <View style={styles.actionsSection}>
-          <Text style={styles.sectionTitle}>การจัดการ</Text>
-
-          <View style={styles.actionsGrid}>
-            {quickActions.map((action, idx) => (
-              <Pressable
-                key={idx}
-                style={({ pressed }) => [
-                  styles.actionCard,
-                  pressed && styles.actionCardPressed,
-                ]}
-                onPress={() => {
-                  // TODO: ใส่ router.push(...) ภายหลัง
-                }}
-              >
-                <View
-                  style={[
-                    styles.actionIcon,
-                    { backgroundColor: action.color + "20" },
-                  ]}
-                >
-                  <Ionicons name={action.icon} size={28} color={action.color} />
-                </View>
-                <Text style={styles.actionLabel}>{action.label}</Text>
-              </Pressable>
-            ))}
-          </View>
-        </View>
-
-        {/* ===== ACTIVITY ===== */}
-        <View style={styles.activitySection}>
+      <View style={{ paddingTop: 16 }}>
+        <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>กิจกรรมล่าสุด</Text>
-            <Pressable>
-              <Text style={styles.seeAllText}>ดูทั้งหมด</Text>
-            </Pressable>
+            <View>
+              <Text style={styles.sectionTitle}>สรุปด่วน</Text>
+              <Text style={styles.sectionSub}>ภาพรวมสถานะล่าสุด</Text>
+            </View>
           </View>
 
-          {/* activity cards เหมือนเดิม */}
+          <View style={styles.quickRow}>
+            {loading && !statsData ? (
+              <>
+                <Card style={styles.quickCard}>
+                  <SkeletonBlock
+                    h={36}
+                    w={36}
+                    r={12}
+                    style={{ marginBottom: 10 }}
+                  />
+                  <SkeletonBlock h={22} w={48} r={8} />
+                  <SkeletonBlock h={12} w={60} r={8} style={{ marginTop: 8 }} />
+                </Card>
+                <Card style={styles.quickCard}>
+                  <SkeletonBlock
+                    h={36}
+                    w={36}
+                    r={12}
+                    style={{ marginBottom: 10 }}
+                  />
+                  <SkeletonBlock h={22} w={48} r={8} />
+                  <SkeletonBlock h={12} w={60} r={8} style={{ marginTop: 8 }} />
+                </Card>
+                <Card style={styles.quickCard}>
+                  <SkeletonBlock
+                    h={36}
+                    w={36}
+                    r={12}
+                    style={{ marginBottom: 10 }}
+                  />
+                  <SkeletonBlock h={22} w={48} r={8} />
+                  <SkeletonBlock h={12} w={60} r={8} style={{ marginTop: 8 }} />
+                </Card>
+              </>
+            ) : (
+              quickStats.map((item) => (
+                <Card key={item.label} style={styles.quickCard}>
+                  <View
+                    style={[
+                      styles.quickIcon,
+                      { backgroundColor: item.color + "18" },
+                    ]}
+                  >
+                    <Ionicons name={item.icon} size={18} color={item.color} />
+                  </View>
+                  <Text style={styles.quickValue}>
+                    {Number(item.value).toLocaleString("th-TH")}
+                  </Text>
+                  <Text style={styles.quickLabel}>{item.label}</Text>
+                </Card>
+              ))
+            )}
+          </View>
         </View>
 
-        <View style={{ height: 40 }} />
-      </ScrollView>
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <View>
+              <Text style={styles.sectionTitle}>ตัวชี้วัดหลัก</Text>
+              <Text style={styles.sectionSub}>
+                แตะเพื่อดูรายละเอียด (ภายหลังค่อยต่อ)
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.statsGrid}>
+            {loading && !statsData ? (
+              <>
+                {Array.from({ length: 5 }).map((_, i) => (
+                  <Card key={i} style={styles.statCard}>
+                    <SkeletonBlock
+                      h={42}
+                      w={42}
+                      r={14}
+                      style={{ marginBottom: 12 }}
+                    />
+                    <SkeletonBlock h={26} w={90} r={10} />
+                    <SkeletonBlock
+                      h={12}
+                      w={110}
+                      r={8}
+                      style={{ marginTop: 10 }}
+                    />
+                  </Card>
+                ))}
+              </>
+            ) : (
+              stats.map((stat) => (
+                <Card key={stat.key} style={styles.statCard}>
+                  <View
+                    style={[styles.statIcon, { backgroundColor: stat.bgColor }]}
+                  >
+                    <Ionicons name={stat.icon} size={22} color={stat.color} />
+                  </View>
+                  <Text style={styles.statNumber}>
+                    {Number(stat.number).toLocaleString("th-TH")}
+                  </Text>
+                  <Text style={styles.statLabel}>{stat.title}</Text>
+                </Card>
+              ))
+            )}
+          </View>
+        </View>
+
+        <View style={{ height: 16 }} />
+      </View>
+    </View>
+  );
+
+  return (
+    <View style={styles.screen}>
+      <FlatList
+        data={[{ id: "content" }]}
+        keyExtractor={(item) => item.id}
+        renderItem={Content}
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
+        }
+        nestedScrollEnabled
+      />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#f8fafc",
-  },
+  screen: { flex: 1, backgroundColor: "#f8fafc" },
+  content: { paddingBottom: 20 },
+
   header: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    paddingHorizontal: 20,
     paddingTop: 60,
-    paddingBottom: 20,
-    backgroundColor: "#fff",
-  },
-  greeting: {
-    fontSize: 16,
-    color: "#64748b",
-    marginBottom: 4,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: "800",
-    color: "#1e293b",
-  },
-  notificationBtn: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: "#f1f5f9",
-    justifyContent: "center",
-    alignItems: "center",
-    position: "relative",
-  },
-  notificationDot: {
-    position: "absolute",
-    top: 10,
-    right: 10,
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: "#ef4444",
-    borderWidth: 2,
-    borderColor: "#fff",
-  },
-  statsSection: {
+    paddingBottom: 16,
     paddingHorizontal: 20,
-    paddingTop: 40,
+    backgroundColor: "#fff",
+    borderBottomWidth: 1,
+    borderBottomColor: "#e2e8f0",
+  },
+  headerTitle: {
+    fontSize: 26,
+    color: "#0f172a",
+    fontWeight: "900",
+    letterSpacing: -0.3,
+  },
+
+  section: { paddingHorizontal: 20, marginTop: 18 },
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    marginBottom: 12,
+    gap: 10,
   },
   sectionTitle: {
     fontSize: 18,
-    fontWeight: "700",
-    color: "#1e293b",
-    marginBottom: 16,
+    fontWeight: "900",
+    color: "#0f172a",
+    letterSpacing: -0.2,
   },
-  statCard: {
+  sectionSub: {
+    marginTop: 4,
+    fontSize: 12,
+    color: "#94a3b8",
+    fontWeight: "700",
+  },
+
+  card: {
     backgroundColor: "#fff",
-    padding: 16,
-    borderRadius: 16,
-    marginBottom: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    borderRadius: 18,
+    padding: 14,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
+    shadowOpacity: 0.06,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 6 },
     elevation: 2,
   },
-  statCardPressed: {
-    opacity: 0.7,
-    transform: [{ scale: 0.98 }],
-  },
-  statCardLeft: {
-    flexDirection: "row",
+
+  quickRow: { flexDirection: "row", gap: 10 },
+  quickCard: { flex: 1, alignItems: "center", paddingVertical: 16 },
+  quickIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 14,
     alignItems: "center",
-    flex: 1,
-  },
-  iconContainer: {
-    width: 56,
-    height: 56,
-    borderRadius: 16,
     justifyContent: "center",
-    alignItems: "center",
-    marginRight: 16,
+    marginBottom: 10,
   },
-  statInfo: {
-    flex: 1,
+  quickValue: {
+    fontSize: 22,
+    fontWeight: "900",
+    color: "#0f172a",
+    letterSpacing: -0.3,
   },
-  statTitle: {
-    fontSize: 14,
+  quickLabel: {
+    fontSize: 11,
     color: "#64748b",
-    marginBottom: 6,
-    fontWeight: "500",
+    fontWeight: "800",
+    marginTop: 4,
   },
-  statNumberRow: {
-    flexDirection: "row",
+
+  statsGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  statCard: { width: "48%" },
+  statIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 16,
     alignItems: "center",
-    gap: 8,
+    justifyContent: "center",
+    marginBottom: 12,
   },
   statNumber: {
     fontSize: 24,
-    fontWeight: "800",
-    color: "#1e293b",
-  },
-  changeBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    backgroundColor: "#f1f5f9",
-  },
-  changeBadgeUp: {
-    backgroundColor: "#d1fae5",
-  },
-  changeBadgeNeutral: {
-    backgroundColor: "#fef3c7",
-  },
-  changeText: {
-    fontSize: 12,
-    fontWeight: "700",
-    color: "#64748b",
-  },
-  changeTextUp: {
-    color: "#10b981",
-  },
-  actionsSection: {
-    paddingHorizontal: 20,
-    marginTop: 24,
-  },
-  actionsGrid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: 12,
-  },
-  actionCard: {
-    width: "48%",
-    backgroundColor: "#fff",
-    padding: 20,
-    borderRadius: 16,
-    alignItems: "center",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  actionCardPressed: {
-    opacity: 0.7,
-    transform: [{ scale: 0.98 }],
-  },
-  actionIcon: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 12,
-  },
-  actionLabel: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#334155",
-  },
-  activitySection: {
-    paddingHorizontal: 20,
-    marginTop: 24,
-  },
-  sectionHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    marginBottom: 16,
-  },
-  seeAllText: {
-    fontSize: 14,
-    fontWeight: "600",
-    color: "#6366f1",
-  },
-  activityCard: {
-    backgroundColor: "#fff",
-    padding: 16,
-    borderRadius: 12,
-    marginBottom: 10,
-    flexDirection: "row",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 1,
-  },
-  activityIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: "#f8fafc",
-    justifyContent: "center",
-    alignItems: "center",
-    marginRight: 12,
-  },
-  activityContent: {
-    flex: 1,
-  },
-  activityTitle: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#1e293b",
+    fontWeight: "900",
+    color: "#0f172a",
     marginBottom: 4,
+    letterSpacing: -0.4,
   },
-  activityText: {
-    fontSize: 13,
-    color: "#64748b",
-    marginBottom: 4,
-  },
-  activityTime: {
-    fontSize: 12,
-    color: "#94a3b8",
-  },
+  statLabel: { fontSize: 12, color: "#64748b", fontWeight: "800" },
+
+  skeleton: { backgroundColor: "#e2e8f0" },
 });
