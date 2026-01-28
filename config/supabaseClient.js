@@ -2,8 +2,12 @@ import { createClient } from "@supabase/supabase-js";
 import Constants from "expo-constants";
 import "react-native-url-polyfill/auto";
 
-const supabaseUrl = Constants.expoConfig.extra.supabaseUrl;
-const supabaseAnonKey = Constants.expoConfig.extra.supabaseAnonKey;
+const supabaseUrl = Constants.expoConfig?.extra?.supabaseUrl;
+const supabaseAnonKey = Constants.expoConfig?.extra?.supabaseAnonKey;
+
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error("Missing Supabase env: supabaseUrl / supabaseAnonKey");
+}
 
 /* =========================
    PUBLIC (ANON) CLIENT
@@ -17,14 +21,10 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 });
 
 /* =========================
-   CLERK QUERY CLIENT
-   (สร้างใหม่ได้ ปลอดภัย)
+   CLERK AUTH CLIENT (PER REQUEST)
 ========================= */
-let latestClerkToken = null;
-
 export const createClerkSupabaseClient = (clerkToken) => {
   if (!clerkToken) throw new Error("Missing Clerk token");
-  latestClerkToken = clerkToken;
 
   return createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
@@ -36,11 +36,9 @@ export const createClerkSupabaseClient = (clerkToken) => {
       params: { eventsPerSecond: 10 },
     },
     global: {
-      fetch: async (url, options = {}) => {
-        if (!latestClerkToken) throw new Error("Missing Clerk token");
-        const headers = new Headers(options.headers || {});
-        headers.set("Authorization", `Bearer ${latestClerkToken}`);
-        return fetch(url, { ...options, headers });
+      headers: {
+        Authorization: `Bearer ${clerkToken}`,
+        apikey: supabaseAnonKey,
       },
     },
   });
@@ -48,13 +46,12 @@ export const createClerkSupabaseClient = (clerkToken) => {
 
 /* =========================
    REALTIME CLIENT (SINGLETON)
-   ✅ คืนค่าเป็น SupabaseClient
 ========================= */
 let realtimeClient = null;
+let realtimeToken = null;
 
 export const getRealtimeClient = (clerkToken) => {
   if (!clerkToken) throw new Error("Missing Clerk token");
-  latestClerkToken = clerkToken;
 
   if (!realtimeClient) {
     realtimeClient = createClient(supabaseUrl, supabaseAnonKey, {
@@ -64,22 +61,58 @@ export const getRealtimeClient = (clerkToken) => {
         detectSessionInUrl: false,
       },
       realtime: {
-        params: { eventsPerSecond: 10 },
+        params: {
+          eventsPerSecond: 10,
+        },
+      },
+      global: {
+        headers: {
+          Authorization: `Bearer ${clerkToken}`,
+          apikey: supabaseAnonKey,
+        },
       },
     });
+
+    realtimeToken = clerkToken;
+    console.log("✅ Realtime client created");
+    return realtimeClient;
   }
 
-  // ✅ update auth ให้ socket เดิม
-  realtimeClient.realtime.setAuth(clerkToken);
+  if (clerkToken !== realtimeToken) {
+    realtimeToken = clerkToken;
+
+    try {
+      console.log("🔄 Realtime token changed, reconnecting...");
+      realtimeClient.realtime.setAuth(clerkToken);
+      realtimeClient.realtime.disconnect();
+
+      setTimeout(() => {
+        realtimeClient?.realtime.connect();
+        console.log("✅ Realtime reconnected");
+      }, 100);
+    } catch (error) {
+      console.error("❌ Realtime reconnect error:", error);
+    }
+  }
 
   return realtimeClient;
 };
 
 export const resetRealtimeClient = async () => {
   try {
-    await realtimeClient?.realtime?.disconnect();
-  } catch {}
-  realtimeClient = null;
+    if (realtimeClient?.removeAllChannels) {
+      await realtimeClient.removeAllChannels();
+    }
+    if (realtimeClient?.realtime) {
+      await realtimeClient.realtime.disconnect();
+      console.log("✅ Realtime client disconnected");
+    }
+  } catch (error) {
+    console.error("❌ Disconnect error:", error);
+  } finally {
+    realtimeClient = null;
+    realtimeToken = null;
+  }
 };
 
 export default supabase;

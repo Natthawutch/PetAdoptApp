@@ -200,6 +200,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.05,
     shadowRadius: 8,
     elevation: 3,
+    paddingTop: StatusBar.currentHeight ? StatusBar.currentHeight + 10 : 30,
   },
   backButton: {
     width: 40,

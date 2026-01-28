@@ -47,7 +47,6 @@ export default function AddNewPetForm() {
     total: 0,
   });
 
-  
   /* -------------------- Media Picker Logic -------------------- */
 
   const pickImages = async () => {
@@ -114,7 +113,7 @@ export default function AddNewPetForm() {
     if (!petName || !category || !sex || images.length === 0) {
       return Alert.alert(
         "ข้อมูลไม่ครบ",
-        "กรุณาระบุชื่อ ประเภท เพศ และเพิ่มรูปอย่างน้อย 1 รูป"
+        "กรุณาระบุชื่อ ประเภท เพศ และเพิ่มรูปอย่างน้อย 1 รูป",
       );
     }
 
@@ -125,7 +124,7 @@ export default function AddNewPetForm() {
 
       // 1. Upload Images
       const imageUrls = await Promise.all(
-        images.map((img) => uploadFile(img.uri, user.id, false))
+        images.map((img) => uploadFile(img.uri, user.id, false)),
       );
 
       // 2. Upload Video (if any)
@@ -406,7 +405,12 @@ export default function AddNewPetForm() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F8F9FB", paddingHorizontal: 20 },
+  container: {
+    flex: 1,
+    backgroundColor: "#F8F9FB",
+    paddingHorizontal: 20,
+    paddingTop: 20,
+  },
   header: { marginTop: 30, marginBottom: 20 },
   title: { fontSize: 28, fontWeight: "800", color: "#1F2937" },
   subtitle: { fontSize: 14, color: "#6B7280", marginTop: 4 },

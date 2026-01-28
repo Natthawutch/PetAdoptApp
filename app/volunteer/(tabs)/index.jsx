@@ -1,7 +1,8 @@
 // app/volunteer/home/VolunteerHome.jsx
 // VolunteerHome.jsx - Stable Realtime + Reliable Sync (FULL)
+// ✅ Fixed: fetchUnreadCount now uses volunteerUuid (Supabase UUID) instead of userId (Clerk ID)
+// ✅ Fixed: Realtime notifications listener uses volunteerUuid
 // ✅ Includes unread notifications badge that clears when read (via focus refresh)
-// ✅ Notifications schema assumed: notifications(user_id TEXT, unread BOOLEAN, created_at ...)
 
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
@@ -64,7 +65,7 @@ export default function VolunteerHome() {
   });
 
   const [statsLoading, setStatsLoading] = useState(true);
-  const [realtimeStatus, setRealtimeStatus] = useState("disconnected"); // disconnected | CONNECTING | SUBSCRIBED | ...
+  const [realtimeStatus, setRealtimeStatus] = useState("disconnected");
   const [lastSyncLabel, setLastSyncLabel] = useState("—");
 
   // ✅ volunteer uuid in DB (users.id)
@@ -84,8 +85,8 @@ export default function VolunteerHome() {
   const appStateRef = useRef(AppState.currentState);
 
   // Realtime refs
-  const realtimeRef = useRef(null); // SupabaseClient
-  const channelRef = useRef(null); // RealtimeChannel
+  const realtimeRef = useRef(null);
+  const channelRef = useRef(null);
   const connectLockRef = useRef(false);
   const connectInFlightRef = useRef(false);
 
@@ -118,7 +119,6 @@ export default function VolunteerHome() {
 
   /* -------------------------- Token helpers -------------------------- */
 
-  // ✅ token แบบทน: retry สั้น ๆ
   const getClerkToken = useCallback(async () => {
     if (!isLoaded || !isSignedIn) return null;
 
@@ -176,18 +176,28 @@ export default function VolunteerHome() {
     }
   }, [getSupabase, formatTimeLabel]);
 
-  // ✅ Notifications unread count (matches your VolunteerNotifications table fields)
+  // ✅ FIXED: fetchUnreadCount now uses volunteerUuid
   const fetchUnreadCount = useCallback(async () => {
     try {
       const supabase = await getSupabase();
       if (!supabase) return;
-      if (!userId) return;
+
+      // ✅ Must use volunteerUuid (Supabase UUID), not userId (Clerk ID)
+      let vu = volunteerUuid;
+      if (!vu) {
+        vu = await resolveVolunteerUuid(supabase);
+        if (!vu) {
+          console.log("❌ Cannot resolve volunteer uuid for notifications");
+          return;
+        }
+        if (mountedRef.current) setVolunteerUuid(vu);
+      }
 
       const { count, error } = await supabase
         .from("notifications")
         .select("id", { count: "exact", head: true })
-        .eq("user_id", userId) // ✅ Clerk user.id
-        .eq("unread", true); // ✅ unread boolean
+        .eq("user_id", vu) // ✅ Changed from userId to vu (UUID)
+        .eq("unread", true);
 
       if (error) throw error;
       if (!mountedRef.current) return;
@@ -197,7 +207,7 @@ export default function VolunteerHome() {
     } catch (e) {
       console.log("❌ fetchUnreadCount error:", e);
     }
-  }, [getSupabase, userId, formatTimeLabel]);
+  }, [getSupabase, volunteerUuid, resolveVolunteerUuid, formatTimeLabel]);
 
   const fetchVolunteerStats = useCallback(async () => {
     try {
@@ -311,7 +321,6 @@ export default function VolunteerHome() {
 
   /* -------------------------- Realtime ----------------------------- */
 
-  // ✅ remove only channel
   const removeRealtimeChannel = useCallback(async () => {
     const rt = realtimeRef.current;
     const ch = channelRef.current;
@@ -415,20 +424,22 @@ export default function VolunteerHome() {
           );
         }
 
-        // ✅ Listener C: my notifications => unreadCount
-        channel.on(
-          "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "notifications",
-            filter: `user_id=eq.${userId}`, // ✅ Clerk id
-          },
-          () => {
-            if (!mountedRef.current) return;
-            scheduleDebouncedNotif(450);
-          },
-        );
+        // ✅ FIXED: Listener C uses volunteerUuid instead of userId
+        if (volunteerUuid) {
+          channel.on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "notifications",
+              filter: `user_id=eq.${volunteerUuid}`, // ✅ Changed from userId to volunteerUuid
+            },
+            () => {
+              if (!mountedRef.current) return;
+              scheduleDebouncedNotif(450);
+            },
+          );
+        }
 
         channel.subscribe((status) => {
           if (!mountedRef.current) return;
@@ -442,8 +453,10 @@ export default function VolunteerHome() {
 
             // initial quick sync after subscribe
             scheduleDebouncedUrgent(250);
-            if (volunteerUuid) scheduleDebouncedStats(350);
-            scheduleDebouncedNotif(300);
+            if (volunteerUuid) {
+              scheduleDebouncedStats(350);
+              scheduleDebouncedNotif(300); // ✅ Only sync if volunteerUuid exists
+            }
             return;
           }
 
@@ -495,9 +508,8 @@ export default function VolunteerHome() {
 
       // initial fetch
       await fetchUrgentCount();
-      await fetchUnreadCount();
 
-      // resolve volunteerUuid first (so assigned filter works)
+      // ✅ resolve volunteerUuid first before fetching unreadCount
       const supabase = await getSupabase();
       if (supabase) {
         const vu = await resolveVolunteerUuid(supabase);
@@ -506,6 +518,8 @@ export default function VolunteerHome() {
         }
       }
 
+      // ✅ Now fetch unreadCount (after volunteerUuid is set)
+      await fetchUnreadCount();
       await fetchVolunteerStats();
       await connectRealtimeRef.current?.({ force: true, reason: "init" });
 
@@ -542,7 +556,7 @@ export default function VolunteerHome() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
 
-  // ถ้า volunteerUuid เพิ่งถูก resolve ทีหลัง ให้ reconnect เพื่อเพิ่ม listener assigned_to_me
+  // ถ้า volunteerUuid เพิ่งถูก resolve ทีหลัง ให้ reconnect เพื่อเพิ่ม listener
   useEffect(() => {
     if (!userId) return;
     if (!volunteerUuid) return;
@@ -579,8 +593,6 @@ export default function VolunteerHome() {
   useFocusEffect(
     useCallback(() => {
       fetchUnreadCount();
-      // optional: also refresh urgent + stats
-      // fetchUrgentCount();
       return () => {};
     }, [fetchUnreadCount]),
   );

@@ -27,30 +27,29 @@ export default function Notifications() {
   const fetchRef = useRef(null);
 
   const ensureSupabase = useCallback(async () => {
-  if (!user?.id) return null;
+    if (!user?.id) return null;
 
-  const token = await getToken({ template: "supabase" });
-  if (!token) throw new Error("No Clerk token");
+    const token = await getToken({ template: "supabase" });
+    if (!token) throw new Error("No Clerk token");
 
-  const currentToken = supabaseRef.current?.__clerkToken;
+    const currentToken = supabaseRef.current?.__clerkToken;
 
-  // 🔥 ถ้า token เปลี่ยน → destroy & recreate
-  if (!supabaseRef.current || currentToken !== token) {
-    console.log("🔄 Recreate Supabase client (new JWT)");
+    // 🔥 ถ้า token เปลี่ยน → destroy & recreate
+    if (!supabaseRef.current || currentToken !== token) {
+      console.log("🔄 Recreate Supabase client (new JWT)");
 
-    if (channelRef.current) {
-      await channelRef.current.unsubscribe();
-      channelRef.current = null;
+      if (channelRef.current) {
+        await channelRef.current.unsubscribe();
+        channelRef.current = null;
+      }
+
+      const supabase = createClerkSupabaseClient(token);
+      supabase.__clerkToken = token;
+      supabaseRef.current = supabase;
     }
 
-    const supabase = createClerkSupabaseClient(token);
-    supabase.__clerkToken = token;
-    supabaseRef.current = supabase;
-  }
-
-  return supabaseRef.current;
-}, [user?.id, getToken]);
-
+    return supabaseRef.current;
+  }, [user?.id, getToken]);
 
   const fetchRequests = useCallback(async () => {
     if (!user?.id) return;
@@ -70,7 +69,7 @@ export default function Notifications() {
           pets (
             name
           )
-        `
+        `,
         )
         .eq("owner_id", user.id)
         .order("created_at", { ascending: false });
@@ -97,7 +96,7 @@ export default function Notifications() {
       return () => {
         // nothing here (fetch)
       };
-    }, [user?.id])
+    }, [user?.id]),
   );
 
   // ✅ Realtime: subscribe ตอน focus / unsubscribe ตอน blur
@@ -130,7 +129,7 @@ export default function Notifications() {
               },
               () => {
                 fetchRef.current?.();
-              }
+              },
             )
             .subscribe((status) => {
               console.log("📡 Realtime status:", status);
@@ -155,7 +154,7 @@ export default function Notifications() {
           channelRef.current = null;
         }
       };
-    }, [user?.id, ensureSupabase])
+    }, [user?.id, ensureSupabase]),
   );
 
   const renderItem = ({ item }) => {

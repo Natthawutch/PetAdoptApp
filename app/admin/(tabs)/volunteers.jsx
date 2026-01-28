@@ -65,7 +65,7 @@ export default function AdminVolunteers() {
       const { data: reqs, error: reqErr } = await supabase
         .from("volunteer_requests")
         .select(
-          "id, requester_id, user_id, phone, area, reason, motivation, availability, experience, status, created_at"
+          "id, requester_id, user_id, phone, area, reason, motivation, availability, experience, status, created_at",
         )
         .eq("status", "pending")
         .order("created_at", { ascending: false });
@@ -137,7 +137,7 @@ export default function AdminVolunteers() {
           (payload) => {
             console.log("🔄 realtime payload:", payload.eventType);
             load();
-          }
+          },
         )
         .subscribe((status, err) => {
           console.log("📡 Realtime status Voluntrre:", status);
@@ -166,15 +166,18 @@ export default function AdminVolunteers() {
     if (refreshTimerRef.current) return;
 
     // ✅ ลด interval เหลือ 3 นาที (token Clerk มักหมดอายุ 5 นาที)
-    refreshTimerRef.current = setInterval(async () => {
-      try {
-        console.log("🔁 refreshing token + resubscribe realtime...");
-        await subscribeRealtime();
-        await load();
-      } catch (e) {
-        console.log("❌ auto refresh error:", e);
-      }
-    }, 3 * 60 * 1000); // 3 นาที
+    refreshTimerRef.current = setInterval(
+      async () => {
+        try {
+          console.log("🔁 refreshing token + resubscribe realtime...");
+          await subscribeRealtime();
+          await load();
+        } catch (e) {
+          console.log("❌ auto refresh error:", e);
+        }
+      },
+      3 * 60 * 1000,
+    ); // 3 นาที
   };
 
   const stopAutoRefresh = () => {
@@ -404,7 +407,7 @@ export default function AdminVolunteers() {
                           onPress: () => reject(item),
                           style: "destructive",
                         },
-                      ]
+                      ],
                     );
                   }}
                 >
@@ -424,7 +427,7 @@ export default function AdminVolunteers() {
                       [
                         { text: "ยกเลิก", style: "cancel" },
                         { text: "อนุมัติ", onPress: () => approve(item) },
-                      ]
+                      ],
                     );
                   }}
                 >
@@ -545,7 +548,7 @@ export default function AdminVolunteers() {
                         onPress: () => reject(selectedRequest),
                         style: "destructive",
                       },
-                    ]
+                    ],
                   );
                 }}
                 disabled={actionLoading}
@@ -574,7 +577,7 @@ export default function AdminVolunteers() {
                         text: "อนุมัติ",
                         onPress: () => approve(selectedRequest),
                       },
-                    ]
+                    ],
                   );
                 }}
                 disabled={actionLoading}
@@ -619,7 +622,7 @@ const styles = StyleSheet.create({
   header: {
     backgroundColor: "#fff",
     paddingHorizontal: 20,
-    paddingTop: 60,
+    paddingTop: 40,
     paddingBottom: 20,
     flexDirection: "row",
     justifyContent: "space-between",

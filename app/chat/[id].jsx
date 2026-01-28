@@ -178,7 +178,7 @@ export default function ChatScreen() {
             setTimeout(() => {
               flatListRef.current?.scrollToEnd({ animated: true });
             }, 50);
-          }
+          },
         )
         .on(
           "postgres_changes",
@@ -191,9 +191,11 @@ export default function ChatScreen() {
           (payload) => {
             console.log("✏️ Message updated:", payload.new);
             setMessages((prev) =>
-              prev.map((msg) => (msg.id === payload.new.id ? payload.new : msg))
+              prev.map((msg) =>
+                msg.id === payload.new.id ? payload.new : msg,
+              ),
             );
-          }
+          },
         )
         .subscribe((status, err) => {
           console.log("Realtime chat status:", status);
@@ -212,7 +214,7 @@ export default function ChatScreen() {
       if (!user?.id || !chatId) return;
 
       console.log(
-        "💬 Chat screen focused - loading messages & setting up realtime"
+        "💬 Chat screen focused - loading messages & setting up realtime",
       );
       loadChatInfo();
       loadMessages();
@@ -225,7 +227,7 @@ export default function ChatScreen() {
           channelRef.current = null;
         }
       };
-    }, [chatId, user?.id])
+    }, [chatId, user?.id]),
   );
 
   const sendMessage = async () => {
@@ -403,7 +405,7 @@ export default function ChatScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F9FAFB" },
+  container: { flex: 1, backgroundColor: "#F9FAFB", paddingTop: 30 },
   header: {
     flexDirection: "row",
     alignItems: "center",

@@ -1,7 +1,14 @@
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { FlatList, RefreshControl, StyleSheet, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  FlatList,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { createClerkSupabaseClient } from "../../../config/supabaseClient";
 import { fetchDashboardStats } from "../../../lib/dashboardApi";
 
@@ -59,20 +66,34 @@ const SkeletonBlock = ({ h = 12, w = "100%", r = 12, style }) => (
 );
 
 export default function Dashboard() {
+  const { user, isLoaded } = useUser();
   const { getToken } = useAuth();
+
+  const ready = isLoaded && !!user;
 
   const [statsData, setStatsData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // ✅ realtime refs
+  // realtime refs
   const supabaseRef = useRef(null);
   const channelsRef = useRef([]);
   const reloadTimerRef = useRef(null);
 
+  // keep stable getToken
+  const getTokenRef = useRef(getToken);
+  useEffect(() => {
+    getTokenRef.current = getToken;
+  }, [getToken]);
+
   const load = async () => {
+    if (!ready) return;
+    setLoading(true);
+
     try {
-      const token = await getToken({ template: "supabase" });
+      const token = await getTokenRef.current({ template: "supabase" });
+      if (!token) return;
+
       const stats = await fetchDashboardStats(token);
       setStatsData(stats);
     } catch (e) {
@@ -82,7 +103,7 @@ export default function Dashboard() {
     }
   };
 
-  // ✅ debounce reload (กันยิงถี่)
+  // debounce reload
   const scheduleReload = () => {
     if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
     reloadTimerRef.current = setTimeout(() => {
@@ -90,28 +111,34 @@ export default function Dashboard() {
     }, 250);
   };
 
+  // initial load
   useEffect(() => {
+    if (!ready) return;
     load();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready]);
 
-  // ✅ Realtime subscribe: users + pets (+ adoptions ถ้ามี)
+  // realtime subscribe: users + pets (+ other tables if needed)
   useEffect(() => {
+    if (!ready) return;
+
     let alive = true;
 
     const setupRealtime = async () => {
       try {
-        const token = await getToken({ template: "supabase" });
+        const token = await getTokenRef.current({ template: "supabase" });
+        if (!token) return;
+
         const supabase = createClerkSupabaseClient(token);
         supabaseRef.current = supabase;
 
-        // cleanup ของเดิม (กันซ้อน)
+        // cleanup existing channels
         channelsRef.current.forEach((ch) => supabase.removeChannel(ch));
         channelsRef.current = [];
 
         const tablesToWatch = [
           "users",
           "pets",
-          // ถ้าคุณมีตารางอื่นที่เอาไปคิด stats ให้ใส่เพิ่ม เช่น:
           // "adoptions",
           // "adoption_requests",
         ];
@@ -147,8 +174,10 @@ export default function Dashboard() {
         channelsRef.current.forEach((ch) => supabase.removeChannel(ch));
       }
       channelsRef.current = [];
+      supabaseRef.current = null;
     };
-  }, [getToken]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -181,6 +210,26 @@ export default function Dashboard() {
       },
     ];
   }, [statsData]);
+
+  // Clerk not loaded
+  if (!isLoaded) {
+    return (
+      <View style={[styles.screen, styles.centered]}>
+        <ActivityIndicator />
+        <Text style={{ marginTop: 10, color: "#64748b" }}>Loading...</Text>
+      </View>
+    );
+  }
+
+  // logged out / redirecting
+  if (!user) {
+    return (
+      <View style={[styles.screen, styles.centered]}>
+        <ActivityIndicator />
+        <Text style={{ marginTop: 10, color: "#64748b" }}>Redirecting...</Text>
+      </View>
+    );
+  }
 
   const Content = () => (
     <View>
@@ -325,10 +374,11 @@ export default function Dashboard() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#f8fafc" },
+  centered: { justifyContent: "center", alignItems: "center" },
   content: { paddingBottom: 20 },
 
   header: {
-    paddingTop: 60,
+    paddingTop: 40,
     paddingBottom: 16,
     paddingHorizontal: 20,
     backgroundColor: "#fff",

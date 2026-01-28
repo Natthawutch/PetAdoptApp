@@ -64,7 +64,7 @@ export default function SignInScreen() {
       console.error("Sign in error:", err);
       Alert.alert(
         "เข้าสู่ระบบไม่สำเร็จ",
-        err.errors?.[0]?.message || "อีเมลหรือรหัสผ่านไม่ถูกต้อง"
+        err.errors?.[0]?.message || "อีเมลหรือรหัสผ่านไม่ถูกต้อง",
       );
     } finally {
       setLoading(false);

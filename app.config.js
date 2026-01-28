@@ -2,7 +2,7 @@
 
 export default {
   expo: {
-    name: "pet-adoption-app",
+    name: "Stay Dog&Cat Care",
     slug: "pet-adoption-app",
     version: "1.0.0",
     scheme: "petadoption",

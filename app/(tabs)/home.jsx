@@ -186,14 +186,15 @@ export default function Home() {
   // =========================
   const openReport = async (pet) => {
     try {
-      const reportedClerkId = pet?.user_id; // pets.user_id = clerk id (text)
+      // ✅ pets.user_id = clerk id (text) -> trim เผื่อมี space
+      const reportedClerkId = (pet?.user_id ?? "").toString().trim();
 
       if (!user?.id) {
         Alert.alert("กรุณาเข้าสู่ระบบ", "ต้องเข้าสู่ระบบก่อนจึงรายงานได้");
         return;
       }
 
-      if (!reportedClerkId || typeof reportedClerkId !== "string") {
+      if (!reportedClerkId) {
         Alert.alert("ไม่สามารถรายงานได้", "ไม่พบข้อมูลเจ้าของโพสต์นี้");
         return;
       }
@@ -218,16 +219,18 @@ export default function Home() {
         return;
       }
 
-      // ✅ ดึงชื่อจริง: ผู้รายงาน (user) + เจ้าของโพสต์ (reported)
-      const { data: users, error: usersErr } = await supabase
+      // ✅ สำคัญ: ดึงชื่อด้วย authed client (กันโดน RLS แล้วได้ [])
+      const authed = await getAuthedSupabase();
+
+      const { data: users, error: usersErr } = await authed
         .from("users")
         .select("clerk_id, full_name, avatar_url")
         .in("clerk_id", [user.id, reportedClerkId]);
 
       if (usersErr) console.log("fetch users error:", usersErr);
+      // console.log("users found:", users); // เปิดไว้ debug ได้
 
       const usersMap = new Map((users || []).map((u) => [u.clerk_id, u]));
-
       const reporter = usersMap.get(user.id);
       const reported = usersMap.get(reportedClerkId);
 
@@ -756,7 +759,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#F1F5F9",
     position: "relative",
   },
-  petImage: { width: "100%", height: "100%", resizeMode: "cover" },
+  petImage: { width: "100%", height: "100%", resizeMode: "contain" },
 
   categoryBadge: {
     position: "absolute",

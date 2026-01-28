@@ -90,7 +90,7 @@ export default function EditProfile() {
       const supabase = createClerkSupabaseClient(token);
 
       const buffer = Uint8Array.from(atob(asset.base64), (c) =>
-        c.charCodeAt(0)
+        c.charCodeAt(0),
       );
 
       await supabase.storage.from("avatars").upload(path, buffer, {
@@ -222,7 +222,7 @@ export default function EditProfile() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#f8fafc" },
+  container: { flex: 1, backgroundColor: "#f8fafc", paddingTop: 20 },
   header: {
     flexDirection: "row",
     alignItems: "center",

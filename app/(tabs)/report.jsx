@@ -22,7 +22,7 @@ import { createClerkSupabaseClient } from "../../config/supabaseClient";
 const ANIMAL_OPTIONS = ["สุนัข", "แมว", "อื่นๆ"];
 
 export default function Report() {
-  const { user } = useUser();
+  const { user, isLoaded } = useUser();
   const { getToken } = useAuth();
 
   const [animalType, setAnimalType] = useState("");
@@ -40,7 +40,7 @@ export default function Report() {
       if (status !== "granted") {
         Alert.alert(
           "ไม่สามารถเข้าถึงตำแหน่งได้",
-          "กรุณาเปิดการเข้าถึง GPS ในการตั้งค่า"
+          "กรุณาเปิดการเข้าถึง GPS ในการตั้งค่า",
         );
         setLocating(false);
         return;
@@ -71,8 +71,13 @@ export default function Report() {
     if (!animalType || !image || !location) {
       Alert.alert(
         "ข้อมูลไม่ครบ",
-        "กรุณาเลือกประเภทสัตว์ ถ่ายรูป และรอพิกัด GPS"
+        "กรุณาเลือกประเภทสัตว์ ถ่ายรูป และรอพิกัด GPS",
       );
+      return;
+    }
+
+    if (!user) {
+      Alert.alert("ข้อผิดพลาด", "กรุณาเข้าสู่ระบบก่อน");
       return;
     }
 
@@ -119,21 +124,42 @@ export default function Report() {
 
       if (reportError) throw reportError;
 
-      // 3. แจ้งเตือนอาสาสมัคร (Notifications)
-      const { data: volunteers } = await supabase
+      console.log("✅ Report created:", report);
+
+      // ✅ 3. แจ้งเตือนอาสาสมัคร (ใช้ Supabase user id แทน clerk_id)
+      const { data: volunteers, error: volError } = await supabase
         .from("users")
-        .select("clerk_id")
+        .select("id") // ✅ เปลี่ยนจาก clerk_id เป็น id (Supabase user id)
         .eq("role", "volunteer");
+
+      if (volError) {
+        console.error("❌ Error fetching volunteers:", volError);
+      }
+
+      console.log(`📋 Found ${volunteers?.length || 0} volunteers`);
 
       if (volunteers?.length > 0) {
         const notifications = volunteers.map((v) => ({
-          user_id: v.clerk_id,
+          user_id: v.id, // ✅ ใช้ Supabase user id
           title: "มีเคสใหม่ 🐾",
           description: `พบ${animalType}: ${detail || "ต้องการความช่วยเหลือ"}`,
           type: "urgent",
+          unread: true, // ✅ เพิ่มให้แน่ใจว่าเป็น unread
         }));
 
-        await supabase.from("notifications").insert(notifications);
+        console.log("📤 Sending notifications:", notifications);
+
+        const { error: notifError } = await supabase
+          .from("notifications")
+          .insert(notifications);
+
+        if (notifError) {
+          console.error("❌ Error inserting notifications:", notifError);
+        } else {
+          console.log(
+            `✅ Sent notifications to ${volunteers.length} volunteers`,
+          );
+        }
       }
 
       Alert.alert("สำเร็จ", "แจ้งเหตุเรียบร้อย อาสาสมัครกำลังรับทราบ ❤️");
@@ -143,12 +169,31 @@ export default function Report() {
       setDetail("");
       setImage(null);
     } catch (err) {
-      console.error(err);
-      Alert.alert("เกิดข้อผิดพลาด", err.message);
+      console.error("❌ Submit error:", err);
+      Alert.alert("เกิดข้อผิดพลาด", err.message || String(err));
     } finally {
       setLoading(false);
     }
   };
+
+  // ✅ รอให้ Clerk โหลดเสร็จ
+  if (!isLoaded) {
+    return (
+      <View style={[styles.container, styles.centered]}>
+        <ActivityIndicator size="large" color="#ef4444" />
+        <Text style={{ marginTop: 10, color: "#6b7280" }}>Loading...</Text>
+      </View>
+    );
+  }
+
+  // ✅ ถ้าไม่มี user
+  if (!user) {
+    return (
+      <View style={[styles.container, styles.centered]}>
+        <Text style={{ color: "#6b7280" }}>กรุณาเข้าสู่ระบบ</Text>
+      </View>
+    );
+  }
 
   return (
     <KeyboardAvoidingView
@@ -239,7 +284,7 @@ export default function Report() {
               <Pressable
                 onPress={() =>
                   Linking.openURL(
-                    `https://www.google.com/maps/search/?api=1&query=${location.latitude},${location.longitude}`
+                    `https://www.google.com/maps/search/?api=1&query=${location.latitude},${location.longitude}`,
                   )
                 }
                 style={styles.mapLink}
@@ -288,6 +333,11 @@ const styles = StyleSheet.create({
     paddingBottom: 40,
     backgroundColor: "#fff",
     paddingTop: 60,
+  },
+  centered: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
   },
   headerTitle: { fontSize: 26, fontWeight: "800", color: "#1f2937" },
   headerSubtitle: {

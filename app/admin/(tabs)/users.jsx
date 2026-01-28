@@ -1,8 +1,10 @@
-import { useAuth } from "@clerk/clerk-expo";
+import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActivityIndicator,
+  Alert,
   FlatList,
   Image,
   RefreshControl,
@@ -33,28 +35,44 @@ function Badge({ label, tone = "neutral" }) {
 }
 
 export default function UsersAdmin() {
+  const { user, isLoaded } = useUser();
   const { getToken } = useAuth();
+
+  const ready = isLoaded && !!user;
 
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // ✅ เก็บ reference ของ realtime channel
   const channelRef = useRef(null);
   const supabaseRef = useRef(null);
 
-  // ✅ เปิดไว้เวลา debug ว่าดึงแถวไหนมา
+  const [updatingId, setUpdatingId] = useState(null);
+
   const DEBUG = false;
 
-  // ✅ สร้าง client ใหม่ทุกครั้ง = ได้ token ใหม่เสมอ (แก้ปัญหา JWT expired)
-  const getSupabase = useCallback(async () => {
-    const token = await getToken({ template: "supabase" });
-    return createClerkSupabaseClient(token);
+  // stable getToken
+  const getTokenRef = useRef(getToken);
+  useEffect(() => {
+    getTokenRef.current = getToken;
   }, [getToken]);
 
+  const getSupabase = useCallback(async () => {
+    if (!ready) return null;
+
+    const token = await getTokenRef.current({ template: "supabase" });
+    if (!token) return null;
+
+    return createClerkSupabaseClient(token);
+  }, [ready]);
+
   const loadUsers = useCallback(async () => {
+    if (!ready) return;
+
+    setLoading(true);
     try {
       const supabase = await getSupabase();
+      if (!supabase) return;
 
       const { data, error } = await supabase
         .from("users")
@@ -73,7 +91,7 @@ export default function UsersAdmin() {
           created_at
         `,
         )
-        .neq("role", "admin") // ✅ ไม่แสดงแอดมิน
+        .neq("role", "admin")
         .order("created_at", { ascending: false });
 
       if (error) throw error;
@@ -82,13 +100,13 @@ export default function UsersAdmin() {
       setUsers(rows);
 
       if (DEBUG) {
-        // log ตัวอย่าง 5 แถวแรก
         console.log(
           "UsersAdmin loadUsers sample:",
           rows.slice(0, 5).map((r) => ({
             id: r.id,
             email: r.email,
             full_name: r.full_name,
+            role: r.role,
           })),
         );
       }
@@ -97,32 +115,35 @@ export default function UsersAdmin() {
     } finally {
       setLoading(false);
     }
-  }, [getSupabase]);
+  }, [ready, getSupabase]);
 
-  // ✅ โหลดครั้งแรก
+  // first load
   useEffect(() => {
+    if (!ready) return;
     loadUsers();
-  }, [loadUsers]);
+  }, [ready, loadUsers]);
 
-  // ✅ โหลดใหม่ทุกครั้งที่กลับมาหน้านี้ (กันข้อมูลค้าง)
+  // refresh when screen focused
   useFocusEffect(
     useCallback(() => {
+      if (!ready) return;
       loadUsers();
-    }, [loadUsers]),
+    }, [ready, loadUsers]),
   );
 
-  // ✅ Realtime subscribe ตาราง users
+  // realtime subscribe
   useEffect(() => {
+    if (!ready) return;
+
     let alive = true;
 
     const setupRealtime = async () => {
       try {
         const supabase = await getSupabase();
+        if (!supabase) return;
 
-        // เก็บ supabase instance สำหรับ cleanup
         supabaseRef.current = supabase;
 
-        // กันซ้อน: ถ้ามี channel เก่าอยู่ ลบก่อน
         if (channelRef.current) {
           supabase.removeChannel(channelRef.current);
           channelRef.current = null;
@@ -141,10 +162,10 @@ export default function UsersAdmin() {
                   id: payload.new?.id ?? payload.old?.id,
                   email: payload.new?.email ?? payload.old?.email,
                   full_name: payload.new?.full_name ?? payload.old?.full_name,
+                  role: payload.new?.role ?? payload.old?.role,
                 });
               }
 
-              // ✅ วิธีชัวร์สุด: refetch ใหม่เหมือนหน้า Home (pets)
               loadUsers();
             },
           )
@@ -164,14 +185,11 @@ export default function UsersAdmin() {
       alive = false;
       const supabase = supabaseRef.current;
       const channel = channelRef.current;
-
-      if (supabase && channel) {
-        supabase.removeChannel(channel);
-      }
+      if (supabase && channel) supabase.removeChannel(channel);
       channelRef.current = null;
       supabaseRef.current = null;
     };
-  }, [getSupabase, loadUsers]);
+  }, [ready, getSupabase, loadUsers]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -194,12 +212,85 @@ export default function UsersAdmin() {
     return "neutral";
   };
 
+  const roleLabel = (role) => {
+    if (role === "volunteer") return "อาสา";
+    return "ผู้ใช้";
+  };
+
+  const nextRole = (role) => (role === "volunteer" ? "user" : "volunteer");
+
+  const updateUserRole = useCallback(
+    async (u) => {
+      if (!u?.id) return;
+
+      const newRole = nextRole(u.role);
+
+      Alert.alert(
+        "ยืนยันการเปลี่ยนสิทธิ์",
+        `เปลี่ยน ${u.full_name || u.email || "ผู้ใช้"} เป็น "${roleLabel(newRole)}" ?`,
+        [
+          { text: "ยกเลิก", style: "cancel" },
+          {
+            text: "เปลี่ยน",
+            style: "default",
+            onPress: async () => {
+              try {
+                setUpdatingId(u.id);
+
+                const supabase = await getSupabase();
+                if (!supabase) return;
+
+                const { error } = await supabase
+                  .from("users")
+                  .update({ role: newRole })
+                  .eq("id", u.id);
+
+                if (error) throw error;
+
+                // optimistic update
+                setUsers((prev) =>
+                  prev.map((x) =>
+                    x.id === u.id ? { ...x, role: newRole } : x,
+                  ),
+                );
+              } catch (e) {
+                console.error("updateUserRole error:", e);
+                Alert.alert("เกิดข้อผิดพลาด", "เปลี่ยน Role ไม่สำเร็จ");
+              } finally {
+                setUpdatingId(null);
+              }
+            },
+          },
+        ],
+      );
+    },
+    [getSupabase],
+  );
+
+  if (!isLoaded) {
+    return (
+      <View style={[styles.screen, styles.centered]}>
+        <ActivityIndicator />
+        <Text style={{ marginTop: 10, color: "#64748b" }}>Loading...</Text>
+      </View>
+    );
+  }
+
+  if (!user) {
+    return (
+      <View style={[styles.screen, styles.centered]}>
+        <ActivityIndicator />
+        <Text style={{ marginTop: 10, color: "#64748b" }}>Redirecting...</Text>
+      </View>
+    );
+  }
+
   const renderUser = ({ item }) => {
     const isUnverified = item.verification_status === "unverified";
+    const isUpdating = updatingId === item.id;
 
     return (
       <View style={styles.card}>
-        {/* Avatar */}
         {item.avatar_url ? (
           <Image source={{ uri: item.avatar_url }} style={styles.avatar} />
         ) : (
@@ -208,7 +299,6 @@ export default function UsersAdmin() {
           </View>
         )}
 
-        {/* Info */}
         <View style={{ flex: 1 }}>
           <View style={styles.topRow}>
             <Text style={styles.name} numberOfLines={1}>
@@ -230,28 +320,25 @@ export default function UsersAdmin() {
             {!!item.id_verified && <Badge label="ID ✓" tone="verified" />}
           </View>
 
-          {/* ✅ Debug แถวที่กำลังโชว์ */}
           {DEBUG && (
             <Text style={{ fontSize: 10, color: "#94a3b8", marginTop: 6 }}>
-              id: {item.id} | {item.email}
+              id: {item.id} | {item.email} | role: {item.role}
             </Text>
           )}
         </View>
 
-        {/* Actions */}
         <View style={styles.actions}>
           <TouchableOpacity
-            style={styles.iconBtn}
-            onPress={() => console.log("Ban user:", item.id)}
+            style={[styles.roleBtn, isUpdating && { opacity: 0.6 }]}
+            disabled={isUpdating}
+            onPress={() => updateUserRole(item)}
           >
-            <Ionicons name="ban-outline" size={18} color="#ef4444" />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.iconBtn}
-            onPress={() => console.log("Delete user:", item.id)}
-          >
-            <Ionicons name="trash-outline" size={18} color="#64748b" />
+            <Ionicons name="swap-horizontal" size={16} color="#0f172a" />
+            <Text style={styles.roleBtnText}>
+              {item.role === "volunteer"
+                ? "เปลี่ยนเป็นผู้ใช้"
+                : "เปลี่ยนเป็นอาสา"}
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -260,7 +347,6 @@ export default function UsersAdmin() {
 
   return (
     <View style={styles.screen}>
-      {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>👥 จัดการผู้ใช้</Text>
 
@@ -280,7 +366,6 @@ export default function UsersAdmin() {
         </View>
       </View>
 
-      {/* List */}
       <FlatList
         data={users}
         keyExtractor={(item) => item.id}
@@ -300,6 +385,7 @@ export default function UsersAdmin() {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#f8fafc", paddingTop: 60 },
+  centered: { justifyContent: "center", alignItems: "center", paddingTop: 0 },
 
   header: { paddingHorizontal: 16, paddingBottom: 12 },
 
@@ -374,9 +460,20 @@ const styles = StyleSheet.create({
 
   badgeText: { fontSize: 11, fontWeight: "800" },
 
-  actions: { justifyContent: "space-between", paddingLeft: 4 },
+  actions: { justifyContent: "center", paddingLeft: 4 },
 
-  iconBtn: { padding: 6 },
+  roleBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: "#f1f5f9",
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 12,
+  },
+  roleBtnText: { fontSize: 12, fontWeight: "900", color: "#0f172a" },
 
   empty: {
     textAlign: "center",

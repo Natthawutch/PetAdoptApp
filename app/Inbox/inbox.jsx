@@ -183,7 +183,7 @@ export default function Inbox() {
           // แชทมีอยู่แล้ว -> อัปเดต + เรียงใหม่
           const updated = prev.map((c) => (c.id === chatId ? updatedChat : c));
           return updated.sort(
-            (a, b) => new Date(b.last_message_at) - new Date(a.last_message_at)
+            (a, b) => new Date(b.last_message_at) - new Date(a.last_message_at),
           );
         } else {
           // แชทใหม่ -> เพิ่มเข้าไป
@@ -223,7 +223,7 @@ export default function Inbox() {
             console.log("📩 New message inserted:", payload.new);
             // อัปเดตเฉพาะแชทนั้น
             updateChatRealtime(payload.new.chat_id);
-          }
+          },
         )
         .on(
           "postgres_changes",
@@ -236,7 +236,7 @@ export default function Inbox() {
             console.log("✏️ Message updated:", payload.new);
             // อัปเดตเฉพาะแชทนั้น (เช่น mark as read)
             updateChatRealtime(payload.new.chat_id);
-          }
+          },
         )
         .on(
           "postgres_changes",
@@ -249,7 +249,7 @@ export default function Inbox() {
             console.log("💬 Chat updated:", payload.new);
             // อัปเดตเฉพาะแชทนั้น
             updateChatRealtime(payload.new.id);
-          }
+          },
         )
         .on(
           "postgres_changes",
@@ -262,7 +262,7 @@ export default function Inbox() {
             console.log("🗑️ Chat deleted:", payload.old);
             // ลบออกจาก state
             setChats((prev) => prev.filter((c) => c.id !== payload.old.id));
-          }
+          },
         )
         .subscribe((status, err) => {
           console.log("🔌 Realtime inbox status:", status);
@@ -281,7 +281,7 @@ export default function Inbox() {
       if (!user?.id) return;
 
       console.log(
-        "📱 Inbox screen focused - loading chats & setting up realtime"
+        "📱 Inbox screen focused - loading chats & setting up realtime",
       );
       loadChats();
       setupRealtime();
@@ -293,7 +293,7 @@ export default function Inbox() {
           channelRef.current = null;
         }
       };
-    }, [user?.id])
+    }, [user?.id]),
   );
 
   // Search filter
@@ -305,8 +305,8 @@ export default function Inbox() {
         chats.filter((chat) =>
           chat.otherUser?.display_name
             ?.toLowerCase()
-            .includes(searchQuery.toLowerCase())
-        )
+            .includes(searchQuery.toLowerCase()),
+        ),
       );
     }
   }, [searchQuery, chats]);
@@ -503,6 +503,7 @@ const styles = StyleSheet.create({
     paddingBottom: 16,
     borderBottomWidth: 1,
     borderBottomColor: "#F3F4F6",
+    paddingTop: 48,
   },
   headerTitle: {
     fontSize: 32,

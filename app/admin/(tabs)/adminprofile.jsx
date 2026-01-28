@@ -13,7 +13,11 @@ import {
   View,
 } from "react-native";
 
-import { createClerkSupabaseClient } from "../../../config/supabaseClient";
+import {
+  clearClerkToken,
+  createClerkSupabaseClient,
+  resetRealtimeClient,
+} from "../../../config/supabaseClient";
 import { fetchDashboardStats } from "../../../lib/dashboardApi";
 import { clearAdminStatus } from "../../../utils/adminStorage";
 
@@ -35,7 +39,11 @@ export default function AdminProfile() {
   const { signOut, getToken } = useAuth();
   const router = useRouter();
 
-  // ✅ primitive dependencies
+  const [isLoggingOut, setIsLoggingOut] = useState(false);
+
+  const ready = isLoaded && !!user && !isLoggingOut;
+
+  // primitive dependencies
   const clerkId = user?.id ?? "";
   const clerkEmail = user?.primaryEmailAddress?.emailAddress ?? "";
   const clerkImage = user?.imageUrl ?? "";
@@ -48,7 +56,7 @@ export default function AdminProfile() {
   const [loading, setLoading] = useState(true);
   const [lastError, setLastError] = useState("");
 
-  // ✅ กัน useEffect ยิงซ้ำเพราะ getToken identity เปลี่ยน
+  // keep stable getToken
   const getTokenRef = useRef(getToken);
   useEffect(() => {
     getTokenRef.current = getToken;
@@ -76,13 +84,21 @@ export default function AdminProfile() {
         setLastError("");
         setLoading(true);
 
-        if (!isLoaded) return;
+        if (!ready) return;
+
         if (!clerkId && !clerkEmail) {
           throw new Error("Missing Clerk identity (id/email)");
         }
 
-        const token = await getTokenRef.current({ template: "supabase" });
-        if (!token) throw new Error("Missing Clerk token (template: supabase)");
+        // ✅ สำคัญ: ตอน logout / session หลุด ให้ token เป็น null แล้ว return เฉย ๆ
+        const token = await getTokenRef
+          .current({ template: "supabase" })
+          .catch(() => null);
+
+        if (!token) {
+          // ไม่ต้อง throw ให้ noisy (ตอนออกระบบจะเข้าเคสนี้)
+          return;
+        }
 
         const supabase = createClerkSupabaseClient(token);
 
@@ -112,7 +128,6 @@ export default function AdminProfile() {
           return profile;
         };
 
-        // ✅ โหลดพร้อมกัน
         const [profile, dashboardStats] = await Promise.all([
           fetchProfile(),
           fetchDashboardStats(token),
@@ -123,7 +138,6 @@ export default function AdminProfile() {
         setDbUser(profile);
         setStats(dashboardStats || RESET_STATS);
 
-        // ✅ optional: enforce admin role (ปรับตามระบบคุณ)
         const role = String(profile?.role || "admin").toLowerCase();
         if (profile && role !== "admin" && role !== "superadmin") {
           Alert.alert("ไม่มีสิทธิ์เข้าถึง", "บัญชีนี้ไม่ใช่ผู้ดูแลระบบ");
@@ -145,7 +159,7 @@ export default function AdminProfile() {
     return () => {
       alive = false;
     };
-  }, [isLoaded, clerkId, clerkEmail, router]);
+  }, [ready, clerkId, clerkEmail, router]);
 
   const quickStats = useMemo(
     () => [
@@ -182,7 +196,6 @@ export default function AdminProfile() {
       color: "#6366f1",
       onPress: () => router.push("/admin/users"),
     },
-
     {
       label: "Reports",
       icon: "document-text-outline",
@@ -199,12 +212,27 @@ export default function AdminProfile() {
         style: "destructive",
         onPress: async () => {
           try {
+            setIsLoggingOut(true);
+            setLoading(true);
+
+            // ✅ 1) ปิด realtime ก่อน (กัน RealtimeBridge spam)
+            await resetRealtimeClient();
+
+            // ✅ 2) ล้าง token global ที่ fetch ใช้
+            clearClerkToken();
+
+            // ✅ 3) เคลียร์สถานะในเครื่อง
             await clearAdminStatus();
+
+            // ✅ 4) ค่อย signOut
             await signOut();
+
             router.replace("/login");
           } catch (err) {
             console.error("❌ Logout Error:", err);
             Alert.alert("เกิดข้อผิดพลาด", "ไม่สามารถออกจากระบบได้");
+          } finally {
+            setLoading(false);
           }
         },
       },
@@ -213,19 +241,22 @@ export default function AdminProfile() {
 
   const initial = (merged.fullName?.[0] || "A").toUpperCase();
 
-  // ✅ Clerk ยังไม่โหลด
   if (!isLoaded) {
     return (
-      <View
-        style={[
-          styles.container,
-          { justifyContent: "center", alignItems: "center" },
-        ]}
-      >
+      <View style={[styles.container, styles.centered]}>
         <ActivityIndicator />
         <Text style={{ marginTop: 10, color: "#64748b" }}>
           Loading profile…
         </Text>
+      </View>
+    );
+  }
+
+  if (!user) {
+    return (
+      <View style={[styles.container, styles.centered]}>
+        <ActivityIndicator />
+        <Text style={{ marginTop: 10, color: "#64748b" }}>Redirecting...</Text>
       </View>
     );
   }
@@ -349,6 +380,7 @@ export default function AdminProfile() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#f8fafc" },
+  centered: { justifyContent: "center", alignItems: "center" },
 
   profileCard: {
     backgroundColor: "#fff",

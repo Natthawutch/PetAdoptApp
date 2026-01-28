@@ -34,7 +34,10 @@ export default function PetDetails() {
   const [pet, setPet] = useState(null);
   const [loading, setLoading] = useState(true);
   const [isFavorite, setIsFavorite] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
+
+  // แยก loading ของปุ่มแชท
+  const [chatLoading, setChatLoading] = useState(false);
+
   const [buttonScale] = useState(new Animated.Value(1));
 
   useEffect(() => {
@@ -54,7 +57,6 @@ export default function PetDetails() {
   const fetchPet = async () => {
     setLoading(true);
 
-    // pets public -> anon client ok
     const { data, error } = await supabase
       .from("pets")
       .select("*")
@@ -77,6 +79,8 @@ export default function PetDetails() {
   const checkFavorite = async () => {
     try {
       const token = await getToken({ template: "supabase", skipCache: true });
+      if (!token) return;
+
       const supabaseAuth = createClerkSupabaseClient(token);
 
       const { data, error } = await supabaseAuth
@@ -101,6 +105,11 @@ export default function PetDetails() {
 
     try {
       const token = await getToken({ template: "supabase", skipCache: true });
+      if (!token) {
+        Alert.alert("เกิดข้อผิดพลาด", "ไม่สามารถยืนยันตัวตนได้");
+        return;
+      }
+
       const supabaseAuth = createClerkSupabaseClient(token);
 
       if (isFavorite) {
@@ -132,6 +141,11 @@ export default function PetDetails() {
   const ensureVerifiedBeforeRequest = async () => {
     try {
       const token = await getToken({ template: "supabase", skipCache: true });
+      if (!token) {
+        Alert.alert("เกิดข้อผิดพลาด", "ไม่สามารถยืนยันตัวตนได้");
+        return { ok: false };
+      }
+
       const supabaseAuth = createClerkSupabaseClient(token);
 
       const { data: me, error } = await supabaseAuth
@@ -174,6 +188,8 @@ export default function PetDetails() {
       return;
     }
 
+    if (!pet) return;
+
     if (user.id === pet.user_id) {
       Alert.alert("คุณเป็นเจ้าของสัตว์ตัวนี้");
       return;
@@ -182,7 +198,6 @@ export default function PetDetails() {
     const verified = await ensureVerifiedBeforeRequest();
     if (!verified.ok) return;
 
-    // ✅ ไปหน้ากรอกฟอร์มแทนการ insert ทันที
     router.push({
       pathname: "/adoption-request/[petId]",
       params: { petId: pet.id },
@@ -198,20 +213,36 @@ export default function PetDetails() {
       return;
     }
 
+    if (!pet) return;
+
     if (user.id === pet.user_id) {
       Alert.alert("คุณเป็นเจ้าของสัตว์ตัวนี้");
       return;
     }
 
-    setIsLoading(true);
+    setChatLoading(true);
 
     try {
       const token = await getToken({ template: "supabase", skipCache: true });
+      if (!token) {
+        Alert.alert(
+          "ไม่สามารถยืนยันตัวตนได้",
+          "กรุณาลองออกจากระบบแล้วเข้าสู่ระบบใหม่",
+        );
+        return;
+      }
+
       const supabaseAuth = createClerkSupabaseClient(token);
 
-      const pair = [user.id, volunteerId].sort().join("_");
-      const chatId = `${petId}_${pair}`; // ✅ unique per pet
+      // ✅ สำคัญ: ห้ามใช้ '_' มาสร้าง/แยก user id เพราะ Clerk id มี '_' อยู่แล้ว
+      const ids = [user.id, pet.user_id].sort();
+      const u1 = ids[0];
+      const u2 = ids[1];
 
+      // ✅ ใช้ delimiter ที่ไม่ชน เช่น ':'
+      const chatId = `${pet.id}:${u1}:${u2}`;
+
+      // เช็คว่ามีห้องแล้วไหม
       const { data: existingChat, error: chatErr } = await supabaseAuth
         .from("chats")
         .select("id")
@@ -220,24 +251,29 @@ export default function PetDetails() {
 
       if (chatErr) throw chatErr;
 
-      if (!existingChat) {
-        const { error } = await supabaseAuth.from("chats").insert({
-          id: chatId,
-          user1_id: pair.split("_")[0],
-          user2_id: pair.split("_")[1],
-          last_message: "",
-          last_message_at: new Date().toISOString(),
-        });
-
-        if (error) throw error;
+      if (existingChat) {
+        router.push(`/chat/${chatId}`);
+        return;
       }
+
+      // สร้างห้องใหม่
+      const { error: insertErr } = await supabaseAuth.from("chats").insert({
+        id: chatId,
+        pet_id: pet.id,
+        user1_id: u1,
+        user2_id: u2,
+        last_message: "",
+        last_message_at: new Date().toISOString(),
+      });
+
+      if (insertErr) throw insertErr;
 
       router.push(`/chat/${chatId}`);
     } catch (err) {
       console.error("InitiateChat error:", err);
-      Alert.alert("ไม่สามารถเริ่มแชทได้");
+      Alert.alert("ไม่สามารถเริ่มแชทได้", err?.message || "เกิดข้อผิดพลาด");
     } finally {
-      setIsLoading(false);
+      setChatLoading(false);
     }
   };
 
@@ -288,21 +324,26 @@ export default function PetDetails() {
               animateButton();
               openAdoptionRequest();
             }}
-            disabled={isLoading || isAdopted}
+            disabled={isAdopted}
           >
             <LinearGradient
               colors={isAdopted ? ["#999", "#666"] : [Colors.PURPLE, "#8B5FBF"]}
               style={styles.gradientButton}
             >
-              {isLoading ? (
-                <ActivityIndicator color="#fff" />
-              ) : (
-                <Text style={styles.adoptBtnText}>
-                  {isAdopted ? "ถูกรับเลี้ยงแล้ว 🐾" : "ส่งคำขอรับเลี้ยง"}
-                </Text>
-              )}
+              <Text style={styles.adoptBtnText}>
+                {isAdopted ? "ถูกรับเลี้ยงแล้ว 🐾" : "ส่งคำขอรับเลี้ยง"}
+              </Text>
             </LinearGradient>
           </TouchableOpacity>
+
+          {chatLoading ? (
+            <View style={{ marginTop: 10, alignItems: "center" }}>
+              <ActivityIndicator color={Colors.PURPLE} />
+              <Text style={{ marginTop: 6, color: "#666" }}>
+                กำลังเริ่มแชท...
+              </Text>
+            </View>
+          ) : null}
         </Animated.View>
       </View>
     </View>
@@ -310,7 +351,7 @@ export default function PetDetails() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#fff" },
+  container: { flex: 1, backgroundColor: "#fff", paddingTop: 25 },
   bottomContainer: {
     position: "absolute",
     bottom: 20,

@@ -1,12 +1,10 @@
 import { useFonts } from "expo-font";
-import * as Notifications from "expo-notifications";
 import { Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { ActivityIndicator, View } from "react-native";
-import AuthWrapper from "../components/AuthWrapper"; // ✅ ใช้ AuthWrapper แทน SyncUser
-import RealtimeBridge from "../components/RealtimeBridge";
 
-import SyncPushToken from "../components/SyncPushToken";
+import AuthWrapper from "../components/AuthWrapper";
+import RealtimeBridge from "../components/RealtimeBridge";
 import ClerkWrapper from "../config/clerkProvider";
 
 export default function RootLayout() {
@@ -16,25 +14,10 @@ export default function RootLayout() {
     "outfit-bold": require("../assets/fonts/Outfit-Bold.ttf"),
   });
 
-  Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowAlert: true,
-      shouldPlaySound: true,
-      shouldSetBadge: true,
-    }),
-  });
-
   if (!fontsLoaded) {
     return (
-      <View
-        style={{
-          flex: 1,
-          justifyContent: "center",
-          alignItems: "center",
-          backgroundColor: "#fff",
-        }}
-      >
-        <ActivityIndicator size="large" color="#8B5CF6" />
+      <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
+        <ActivityIndicator size="large" />
       </View>
     );
   }
@@ -42,21 +25,24 @@ export default function RootLayout() {
   return (
     <ClerkWrapper>
       <RealtimeBridge />
-      <AuthWrapper />
-      <SyncPushToken />
-      <StatusBar style="dark" />
-      <Stack screenOptions={{ headerShown: false }}>
-        <Stack.Screen name="index" />
-        <Stack.Screen name="login/index" />
-        <Stack.Screen name="register/index" />
-        <Stack.Screen name="(tabs)" />
-        <Stack.Screen name="admin" />
-        <Stack.Screen name="add-new-pet/index" />
-        <Stack.Screen name="pet-details/index" />
-        <Stack.Screen name="Favorite/favorite" />
-        <Stack.Screen name="Inbox/inbox" />
-        <Stack.Screen name="user-post/index" />
-      </Stack>
+
+      {/* ✅ AuthWrapper ต้องครอบ Stack แต่หน้า index จะ bypass ได้เพราะมี auth check ของตัวเอง */}
+      <AuthWrapper>
+        <StatusBar style="dark" />
+
+        <Stack screenOptions={{ headerShown: false }}>
+          <Stack.Screen name="index" />
+          <Stack.Screen name="login/index" />
+          <Stack.Screen name="register/index" />
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="admin" />
+          <Stack.Screen name="add-new-pet/index" />
+          <Stack.Screen name="pet-details/index" />
+          <Stack.Screen name="Favorite/favorite" />
+          <Stack.Screen name="Inbox/inbox" />
+          <Stack.Screen name="user-post/index" />
+        </Stack>
+      </AuthWrapper>
     </ClerkWrapper>
   );
 }

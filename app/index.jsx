@@ -39,7 +39,7 @@ export default function Index() {
               duration,
               useNativeDriver: true,
             }),
-          ])
+          ]),
         ).start();
       }, delay);
     };
@@ -61,7 +61,7 @@ export default function Index() {
           duration: 2000,
           useNativeDriver: true,
         }),
-      ])
+      ]),
     ).start();
 
     // Progress bar
@@ -253,25 +253,5 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     position: "absolute",
     top: 0,
-  },
-  indicatorContainer: {
-    flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
-  },
-  indicator: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    backgroundColor: "#fff",
-    marginHorizontal: 5,
-    shadowColor: "#00d4aa",
-    shadowOffset: {
-      width: 0,
-      height: 0,
-    },
-    shadowOpacity: 0.8,
-    shadowRadius: 8,
-    elevation: 8,
   },
 });
