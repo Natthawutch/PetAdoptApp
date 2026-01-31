@@ -7,6 +7,19 @@ import AuthWrapper from "../components/AuthWrapper";
 import RealtimeBridge from "../components/RealtimeBridge";
 import ClerkWrapper from "../config/clerkProvider";
 
+// ✅ notifications
+import * as Notifications from "expo-notifications";
+import SyncPushToken from "../components/SyncPushToken";
+
+// ✅ ทำให้ notification เด้งตอนแอพอยู่ foreground ด้วย
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: true,
+  }),
+});
+
 export default function RootLayout() {
   const [fontsLoaded] = useFonts({
     outfit: require("../assets/fonts/Outfit-Regular.ttf"),
@@ -26,7 +39,9 @@ export default function RootLayout() {
     <ClerkWrapper>
       <RealtimeBridge />
 
-      {/* ✅ AuthWrapper ต้องครอบ Stack แต่หน้า index จะ bypass ได้เพราะมี auth check ของตัวเอง */}
+      {/* ✅ ต้องมี เพื่อให้ sync expo_push_token ลง Supabase */}
+      <SyncPushToken />
+
       <AuthWrapper>
         <StatusBar style="dark" />
 

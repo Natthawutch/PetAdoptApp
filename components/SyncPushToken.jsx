@@ -8,35 +8,56 @@ export default function SyncPushToken() {
   const { getToken } = useAuth();
 
   useEffect(() => {
-    if (!user) return;
+    if (!user?.id) return;
+
+    let cancelled = false;
 
     const syncToken = async () => {
-      const expoPushToken = await registerForPushNotificationsAsync();
-      if (!expoPushToken) return;
+      try {
+        // 1) ขอ expo token
+        const expoPushToken = await registerForPushNotificationsAsync();
+        if (!expoPushToken) {
+          console.log("ℹ️ No expo push token (permission denied / not device)");
+          return;
+        }
 
-      const supabaseToken = await getToken({ template: "supabase" });
-      const supabase = createClerkSupabaseClient(supabaseToken);
+        // 2) ขอ supabase jwt จาก Clerk
+        const supabaseToken = await getToken({ template: "supabase" });
+        if (!supabaseToken) {
+          console.log("❌ Missing supabase token from Clerk template");
+          return;
+        }
 
-      const { error } = await supabase
-        .from("users")
-        .upsert(
+        // 3) upsert ลง users table
+        const supabase = createClerkSupabaseClient(supabaseToken);
+
+        const { error } = await supabase.from("users").upsert(
           {
             clerk_id: user.id,
-            email: user.primaryEmailAddress?.emailAddress,
+            email: user.primaryEmailAddress?.emailAddress ?? null,
             expo_push_token: expoPushToken,
           },
-          { onConflict: "clerk_id" }
+          { onConflict: "clerk_id" },
         );
 
-      if (error) {
-        console.error("❌ Sync push token error:", error);
-      } else {
-        console.log("✅ Push token synced to users table");
+        if (cancelled) return;
+
+        if (error) {
+          console.error("❌ Sync push token error:", error);
+        } else {
+          console.log("✅ Push token synced:", expoPushToken);
+        }
+      } catch (e) {
+        if (!cancelled) console.error("❌ SyncPushToken crashed:", e);
       }
     };
 
     syncToken();
-  }, [user]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]); // ✅ กันยิงซ้ำตอน object user เปลี่ยนเล็กน้อย
 
   return null;
 }

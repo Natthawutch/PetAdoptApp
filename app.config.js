@@ -7,7 +7,7 @@ export default {
     version: "1.0.0",
     scheme: "petadoption",
 
-    icon: "./assets/images/icon1.png",
+    icon: "./assets/images/Intro-icon.png",
 
     android: {
       package: "com.cmru.petadoption",
