@@ -63,7 +63,7 @@ export default function RequestDetail() {
       const { data: requesterUser, error: reqErr } = await supabase
         .from("users")
         .select(
-          "id, clerk_id, full_name, avatar_url, verification_status, verified_at, phone_verified, id_verified"
+          "id, clerk_id, full_name, avatar_url, verification_status, verified_at, phone_verified, id_verified",
         )
         .eq("clerk_id", data.requester_id)
         .maybeSingle();
@@ -143,7 +143,7 @@ export default function RequestDetail() {
         "สำเร็จ",
         status === "approved"
           ? "คุณตอบรับคำขอแล้ว คำขออื่นๆ จะถูกปฏิเสธอัตโนมัติ"
-          : "คุณปฏิเสธคำขอแล้ว"
+          : "คุณปฏิเสธคำขอแล้ว",
       );
 
       router.back();
@@ -324,6 +324,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#F8F9FA",
+    paddingTop: 20,
   },
   center: {
     flex: 1,

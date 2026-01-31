@@ -21,10 +21,29 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 });
 
 /* =========================
+   CLERK TOKEN STORE (GLOBAL)
+   - ใช้กรณีมี fetch/service บางจุดอยากดึง token ล่าสุด
+========================= */
+let clerkTokenStore = null;
+
+export const setClerkToken = (token) => {
+  clerkTokenStore = token ?? null;
+};
+
+export const getClerkToken = () => clerkTokenStore;
+
+export const clearClerkToken = () => {
+  clerkTokenStore = null;
+};
+
+/* =========================
    CLERK AUTH CLIENT (PER REQUEST)
 ========================= */
 export const createClerkSupabaseClient = (clerkToken) => {
   if (!clerkToken) throw new Error("Missing Clerk token");
+
+  // optional: เก็บ token ล่าสุดไว้เผื่อจุดอื่นใช้
+  setClerkToken(clerkToken);
 
   return createClient(supabaseUrl, supabaseAnonKey, {
     auth: {
@@ -61,9 +80,7 @@ export const getRealtimeClient = (clerkToken) => {
         detectSessionInUrl: false,
       },
       realtime: {
-        params: {
-          eventsPerSecond: 10,
-        },
+        params: { eventsPerSecond: 10 },
       },
       global: {
         headers: {
@@ -78,6 +95,7 @@ export const getRealtimeClient = (clerkToken) => {
     return realtimeClient;
   }
 
+  // token เปลี่ยน → reconnect realtime
   if (clerkToken !== realtimeToken) {
     realtimeToken = clerkToken;
 
@@ -100,9 +118,12 @@ export const getRealtimeClient = (clerkToken) => {
 
 export const resetRealtimeClient = async () => {
   try {
+    // ลบ channel ทั้งหมดก่อน
     if (realtimeClient?.removeAllChannels) {
       await realtimeClient.removeAllChannels();
     }
+
+    // disconnect realtime socket
     if (realtimeClient?.realtime) {
       await realtimeClient.realtime.disconnect();
       console.log("✅ Realtime client disconnected");

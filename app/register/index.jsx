@@ -1,9 +1,11 @@
 import { useSignUp } from "@clerk/clerk-expo";
+import { Ionicons } from "@expo/vector-icons";
 import { Link, useRouter } from "expo-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -13,7 +15,6 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import Colors from "../../constants/Colors";
 
 export default function SignUpScreen() {
   const { isLoaded, signUp, setActive } = useSignUp();
@@ -21,13 +22,53 @@ export default function SignUpScreen() {
 
   const [emailAddress, setEmailAddress] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [code, setCode] = useState("");
   const [pendingVerification, setPendingVerification] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [focusedInput, setFocusedInput] = useState(null);
+  const [emailFocused, setEmailFocused] = useState(false);
+  const [passwordFocused, setPasswordFocused] = useState(false);
+  const [codeFocused, setCodeFocused] = useState(false);
+
+  // Animations
+  const fadeIn = useRef(new Animated.Value(0)).current;
+  const slideUp = useRef(new Animated.Value(40)).current;
+  const logoScale = useRef(new Animated.Value(0.8)).current;
+
+  useEffect(() => {
+    fadeIn.setValue(0);
+    slideUp.setValue(40);
+    logoScale.setValue(0.8);
+
+    Animated.stagger(120, [
+      Animated.spring(logoScale, {
+        toValue: 1,
+        useNativeDriver: true,
+        tension: 60,
+        friction: 8,
+      }),
+      Animated.timing(fadeIn, {
+        toValue: 1,
+        duration: 500,
+        useNativeDriver: true,
+      }),
+      Animated.spring(slideUp, {
+        toValue: 0,
+        useNativeDriver: true,
+        tension: 50,
+        friction: 8,
+      }),
+    ]).start();
+  }, [pendingVerification]);
 
   const onSignUpPress = async () => {
     if (!isLoaded) return;
+
+    if (!emailAddress || !password) {
+      Alert.alert("แจ้งเตือน", "กรุณากรอกอีเมลและรหัสผ่าน");
+      return;
+    }
+
     setLoading(true);
     try {
       await signUp.create({ emailAddress, password });
@@ -37,7 +78,7 @@ export default function SignUpScreen() {
       console.error("Sign up error:", err);
       Alert.alert(
         "สมัครไม่สำเร็จ",
-        err.errors?.[0]?.message || "กรุณาตรวจสอบข้อมูลอีกครั้ง"
+        err.errors?.[0]?.message || "กรุณาตรวจสอบข้อมูลอีกครั้ง",
       );
     } finally {
       setLoading(false);
@@ -46,6 +87,12 @@ export default function SignUpScreen() {
 
   const onVerifyPress = async () => {
     if (!isLoaded) return;
+
+    if (!code) {
+      Alert.alert("แจ้งเตือน", "กรุณากรอกรหัสยืนยัน");
+      return;
+    }
+
     setLoading(true);
     try {
       const signUpAttempt = await signUp.attemptEmailAddressVerification({
@@ -65,6 +112,7 @@ export default function SignUpScreen() {
     }
   };
 
+  /* ===================== VERIFICATION SCREEN ===================== */
   if (pendingVerification) {
     return (
       <KeyboardAvoidingView
@@ -76,63 +124,108 @@ export default function SignUpScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          <View style={styles.header}>
-            <View style={styles.iconContainer}>
-              <Text style={styles.emailIcon}>📧</Text>
+          {/* Background Decorations */}
+          <View style={styles.bgCircle1} />
+          <View style={styles.bgCircle2} />
+
+          {/* Logo */}
+          <Animated.View
+            style={[
+              styles.logoContainer,
+              { transform: [{ scale: logoScale }] },
+            ]}
+          >
+            <View style={styles.logoCircle}>
+              <Ionicons name="mail" size={44} color="#fff" />
             </View>
+          </Animated.View>
+
+          {/* Title */}
+          <Animated.View style={[styles.titleContainer, { opacity: fadeIn }]}>
             <Text style={styles.title}>ยืนยันอีเมล</Text>
             <Text style={styles.subtitle}>
-              เราได้ส่งรหัสยืนยันไปที่อีเมลของคุณแล้ว
+              เราส่งรหัสยืนยันไปที่{"\n"}
+              <Text style={styles.subtitleHighlight}>{emailAddress}</Text>
             </Text>
-          </View>
+          </Animated.View>
 
-          <View style={styles.card}>
-            <View style={styles.inputWrapper}>
-              <View style={styles.inputIcon}>
-                <Text style={styles.iconEmoji}>🔢</Text>
-              </View>
-              <View style={styles.inputContent}>
-                <Text style={styles.label}>รหัสยืนยัน</Text>
+          {/* Form */}
+          <Animated.View
+            style={[
+              styles.formContainer,
+              { opacity: fadeIn, transform: [{ translateY: slideUp }] },
+            ]}
+          >
+            {/* OTP Inputs */}
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>รหัสยืนยัน 6 หลัก</Text>
+              <View
+                style={[
+                  styles.inputWrapper,
+                  codeFocused && styles.inputWrapperFocused,
+                ]}
+              >
+                <Ionicons
+                  name="keypad-outline"
+                  size={20}
+                  color={codeFocused ? "#E8734A" : "#A0A0A0"}
+                  style={styles.inputIcon}
+                />
                 <TextInput
-                  style={styles.input}
-                  placeholder="000000"
-                  placeholderTextColor="#B0B0B0"
+                  style={[styles.input, styles.inputOTP]}
+                  placeholder="● ● ● ● ● ●"
+                  placeholderTextColor="#D0D0D0"
                   keyboardType="number-pad"
                   maxLength={6}
                   value={code}
                   onChangeText={setCode}
+                  onFocus={() => setCodeFocused(true)}
+                  onBlur={() => setCodeFocused(false)}
+                  autoFocus
                 />
               </View>
             </View>
 
+            {/* Verify Button */}
             <TouchableOpacity
               style={[styles.button, loading && styles.buttonDisabled]}
               onPress={onVerifyPress}
               disabled={loading}
-              activeOpacity={0.8}
+              activeOpacity={0.85}
             >
               {loading ? (
                 <ActivityIndicator color="#fff" size="small" />
               ) : (
                 <>
+                  <Ionicons name="checkmark-circle" size={20} color="#fff" />
                   <Text style={styles.buttonText}>ยืนยันและเริ่มใช้งาน</Text>
-                  <Text style={styles.buttonEmoji}>✨</Text>
                 </>
               )}
             </TouchableOpacity>
-          </View>
 
-          <View style={styles.helperBox}>
-            <Text style={styles.helperEmoji}>💡</Text>
-            <Text style={styles.helperText}>
-              ไม่ได้รับอีเมล? ตรวจสอบในกล่องจดหมายขยะ หรือลองส่งรหัสใหม่
-            </Text>
-          </View>
+            {/* Helper */}
+            <View style={styles.helperCard}>
+              <View style={styles.helperIconWrapper}>
+                <Ionicons name="information-circle" size={20} color="#E8734A" />
+              </View>
+              <Text style={styles.helperText}>
+                ไม่ได้รับอีเมล? ตรวจสอบในกล่อง Spam หรือ Junk Mail
+              </Text>
+            </View>
+          </Animated.View>
+
+          {/* Back Link */}
+          <Animated.View style={[styles.footer, { opacity: fadeIn }]}>
+            <TouchableOpacity onPress={() => setPendingVerification(false)}>
+              <Text style={styles.footerLink}>← กลับไปยังการสมัкรสมาชิก</Text>
+            </TouchableOpacity>
+          </Animated.View>
         </ScrollView>
       </KeyboardAvoidingView>
     );
   }
 
+  /* ===================== SIGNUP SCREEN ===================== */
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -143,88 +236,131 @@ export default function SignUpScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        <View style={styles.header}>
-          <View style={styles.iconContainer}>
-            <Text style={styles.pawIcon}>❤️</Text>
+        {/* Background Decorations */}
+        <View style={styles.bgCircle1} />
+        <View style={styles.bgCircle2} />
+
+        {/* Logo */}
+        <Animated.View
+          style={[styles.logoContainer, { transform: [{ scale: logoScale }] }]}
+        >
+          <View style={styles.logoCircle}>
+            <Ionicons name="paw" size={44} color="#fff" />
           </View>
+        </Animated.View>
+
+        {/* Title */}
+        <Animated.View style={[styles.titleContainer, { opacity: fadeIn }]}>
           <Text style={styles.title}>เข้าร่วมกับเรา</Text>
           <Text style={styles.subtitle}>
             สร้างบัญชีและเริ่มช่วยเหลือน้องหมาแมวจรจัดวันนี้
           </Text>
-        </View>
+        </Animated.View>
 
-        <View style={styles.card}>
-          <View style={styles.inputWrapper}>
-            <View style={styles.inputIcon}>
-              <Text style={styles.iconEmoji}>✉️</Text>
-            </View>
-            <View style={styles.inputContent}>
-              <Text style={styles.label}>อีเมล</Text>
+        {/* Form */}
+        <Animated.View
+          style={[
+            styles.formContainer,
+            { opacity: fadeIn, transform: [{ translateY: slideUp }] },
+          ]}
+        >
+          {/* Email Input */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>อีเมล</Text>
+            <View
+              style={[
+                styles.inputWrapper,
+                emailFocused && styles.inputWrapperFocused,
+              ]}
+            >
+              <Ionicons
+                name="mail-outline"
+                size={20}
+                color={emailFocused ? "#E8734A" : "#A0A0A0"}
+                style={styles.inputIcon}
+              />
               <TextInput
-                style={[
-                  styles.input,
-                  focusedInput === "email" && styles.inputFocused,
-                ]}
-                placeholder="your@email.com"
-                placeholderTextColor="#B0B0B0"
+                style={styles.input}
+                placeholder="คุณ@อีเมล.com"
+                placeholderTextColor="#C0C0C0"
                 keyboardType="email-address"
                 autoCapitalize="none"
                 value={emailAddress}
                 onChangeText={setEmailAddress}
-                onFocus={() => setFocusedInput("email")}
-                onBlur={() => setFocusedInput(null)}
+                onFocus={() => setEmailFocused(true)}
+                onBlur={() => setEmailFocused(false)}
               />
             </View>
           </View>
 
-          <View style={styles.inputWrapper}>
-            <View style={styles.inputIcon}>
-              <Text style={styles.iconEmoji}>🔒</Text>
-            </View>
-            <View style={styles.inputContent}>
-              <Text style={styles.label}>รหัสผ่าน</Text>
+          {/* Password Input */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>รหัสผ่าน</Text>
+            <View
+              style={[
+                styles.inputWrapper,
+                passwordFocused && styles.inputWrapperFocused,
+              ]}
+            >
+              <Ionicons
+                name="lock-closed-outline"
+                size={20}
+                color={passwordFocused ? "#E8734A" : "#A0A0A0"}
+                style={styles.inputIcon}
+              />
               <TextInput
-                style={[
-                  styles.input,
-                  focusedInput === "password" && styles.inputFocused,
-                ]}
+                style={styles.input}
                 placeholder="อย่างน้อย 8 ตัวอักษร"
-                placeholderTextColor="#B0B0B0"
-                secureTextEntry
+                placeholderTextColor="#C0C0C0"
+                secureTextEntry={!showPassword}
                 value={password}
                 onChangeText={setPassword}
-                onFocus={() => setFocusedInput("password")}
-                onBlur={() => setFocusedInput(null)}
+                onFocus={() => setPasswordFocused(true)}
+                onBlur={() => setPasswordFocused(false)}
               />
+              <TouchableOpacity
+                onPress={() => setShowPassword(!showPassword)}
+                style={styles.eyeButton}
+              >
+                <Ionicons
+                  name={showPassword ? "eye-outline" : "eye-off-outline"}
+                  size={20}
+                  color="#A0A0A0"
+                />
+              </TouchableOpacity>
             </View>
+            <Text style={styles.passwordHint}>
+              รหัสต้องมีอย่างน้อย 8 ตัวอักษร
+            </Text>
           </View>
 
+          {/* Sign Up Button */}
           <TouchableOpacity
             style={[styles.button, loading && styles.buttonDisabled]}
             onPress={onSignUpPress}
             disabled={loading}
-            activeOpacity={0.8}
+            activeOpacity={0.85}
           >
             {loading ? (
               <ActivityIndicator color="#fff" size="small" />
             ) : (
               <>
+                <Ionicons name="person-add" size={20} color="#fff" />
                 <Text style={styles.buttonText}>สมัครสมาชิกฟรี</Text>
-                <Text style={styles.buttonEmoji}>🐾</Text>
               </>
             )}
           </TouchableOpacity>
-        </View>
+        </Animated.View>
 
-        <View style={styles.footer}>
-          <View style={styles.petIcons}></View>
+        {/* Footer */}
+        <Animated.View style={[styles.footer, { opacity: fadeIn }]}>
           <Text style={styles.footerText}>มีบัญชีอยู่แล้ว? </Text>
           <Link href="/login" asChild>
             <TouchableOpacity>
-              <Text style={styles.linkText}>เข้าสู่ระบบ</Text>
+              <Text style={styles.footerLink}>เข้าสู่ระบบ</Text>
             </TouchableOpacity>
           </Link>
-        </View>
+        </Animated.View>
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -233,194 +369,222 @@ export default function SignUpScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#FFF8F0",
+    backgroundColor: "#FFFAF7",
   },
   scrollContent: {
     flexGrow: 1,
     justifyContent: "center",
-    padding: 24,
-    paddingTop: 60,
-    paddingBottom: 40,
+    padding: 28,
+    position: "relative",
   },
-  header: {
+
+  // Background Decorations — same as SignIn
+  bgCircle1: {
+    position: "absolute",
+    top: -80,
+    right: -60,
+    width: 220,
+    height: 220,
+    borderRadius: 110,
+    backgroundColor: "#FDE8DF",
+    opacity: 0.6,
+  },
+  bgCircle2: {
+    position: "absolute",
+    bottom: -40,
+    left: -50,
+    width: 160,
+    height: 160,
+    borderRadius: 80,
+    backgroundColor: "#FEF0E8",
+    opacity: 0.5,
+  },
+
+  // Logo — same as SignIn
+  logoContainer: {
     alignItems: "center",
-    marginBottom: 32,
+    marginBottom: 8,
   },
-  iconContainer: {
-    width: 90,
-    height: 90,
-    borderRadius: 45,
-    backgroundColor: "#FFF",
+  logoCircle: {
+    width: 96,
+    height: 96,
+    borderRadius: 32,
+    backgroundColor: "#E8734A",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 20,
-    shadowColor: Colors.PURPLE || "#8B5CF6",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 5,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#E8734A",
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.35,
+        shadowRadius: 16,
+      },
+      android: {
+        elevation: 8,
+      },
+    }),
   },
-  pawIcon: {
-    fontSize: 48,
-  },
-  emailIcon: {
-    fontSize: 44,
+
+  // Title — same as SignIn
+  titleContainer: {
+    alignItems: "center",
+    marginBottom: 36,
   },
   title: {
     fontSize: 30,
     fontWeight: "800",
-    color: Colors.PURPLE || "#8B5CF6",
-    marginBottom: 8,
-    textAlign: "center",
+    color: "#1A1A1A",
+    marginBottom: 6,
+    letterSpacing: -0.5,
   },
   subtitle: {
     fontSize: 15,
-    color: "#666",
+    color: "#9A9A9A",
+    fontWeight: "500",
     textAlign: "center",
     lineHeight: 22,
-    paddingHorizontal: 20,
   },
-  card: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 24,
-    padding: 24,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 12,
-    elevation: 3,
+  subtitleHighlight: {
+    color: "#E8734A",
+    fontWeight: "700",
+  },
+
+  // Form — same as SignIn
+  formContainer: {
+    width: "100%",
+  },
+  inputGroup: {
+    marginBottom: 18,
+  },
+  inputLabel: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#4A4A4A",
+    marginBottom: 8,
+    letterSpacing: 0.2,
   },
   inputWrapper: {
     flexDirection: "row",
     alignItems: "center",
-    marginBottom: 20,
-    backgroundColor: "#F8F8F8",
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 2,
-    borderColor: "#F0F0F0",
+    backgroundColor: "#fff",
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: "#ECECEC",
+    paddingHorizontal: 14,
+    height: 54,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.04,
+        shadowRadius: 4,
+      },
+      android: {
+        elevation: 1,
+      },
+    }),
+  },
+  inputWrapperFocused: {
+    borderColor: "#E8734A",
+    backgroundColor: "#FFFAF7",
   },
   inputIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: "#FFF",
-    alignItems: "center",
-    justifyContent: "center",
     marginRight: 12,
-  },
-  iconEmoji: {
-    fontSize: 20,
-  },
-  inputContent: {
-    flex: 1,
-  },
-  label: {
-    fontSize: 12,
-    fontWeight: "600",
-    color: "#888",
-    marginBottom: 4,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
+    width: 20,
   },
   input: {
-    fontSize: 16,
-    color: "#1A1A1A",
-    padding: 0,
-    fontWeight: "500",
-  },
-  inputFocused: {
-    color: Colors.PURPLE || "#8B5CF6",
-  },
-  securityBox: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#F0F9FF",
-    padding: 12,
-    borderRadius: 12,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: "#DBEAFE",
-  },
-  securityIcon: {
-    fontSize: 16,
-    marginRight: 8,
-  },
-  securityText: {
     flex: 1,
-    fontSize: 13,
-    color: "#0369A1",
+    fontSize: 15,
+    color: "#1A1A1A",
     fontWeight: "500",
   },
+  inputOTP: {
+    letterSpacing: 6,
+    fontSize: 22,
+    fontWeight: "800",
+    textAlign: "center",
+  },
+  eyeButton: {
+    padding: 4,
+    marginLeft: 8,
+  },
+  passwordHint: {
+    fontSize: 13,
+    color: "#A0A0A0",
+    marginTop: 8,
+    marginLeft: 2,
+  },
+
+  // Button — same as SignIn
   button: {
-    backgroundColor: Colors.PURPLE || "#8B5CF6",
-    padding: 18,
-    borderRadius: 16,
+    flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    flexDirection: "row",
+    gap: 10,
+    backgroundColor: "#E8734A",
+    paddingVertical: 16,
+    borderRadius: 14,
     marginTop: 8,
-    shadowColor: Colors.PURPLE || "#8B5CF6",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    elevation: 6,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#E8734A",
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.35,
+        shadowRadius: 10,
+      },
+      android: {
+        elevation: 5,
+      },
+    }),
   },
   buttonDisabled: {
     opacity: 0.6,
   },
   buttonText: {
-    color: "#FFF",
+    color: "#fff",
+    fontWeight: "700",
     fontSize: 17,
-    fontWeight: "700",
-    marginRight: 8,
+    letterSpacing: 0.3,
   },
-  buttonEmoji: {
-    fontSize: 18,
-  },
-  footer: {
-    alignItems: "center",
-    marginTop: 32,
-  },
-  petIcons: {
-    flexDirection: "row",
-    gap: 8,
-    marginBottom: 12,
-  },
-  petIcon: {
-    fontSize: 28,
-  },
-  footerText: {
-    fontSize: 15,
-    color: "#666",
-    marginBottom: 4,
-  },
-  linkText: {
-    fontSize: 16,
-    color: Colors.PURPLE || "#8B5CF6",
-    fontWeight: "700",
-    textDecorationLine: "underline",
-  },
-  helperBox: {
+
+  // Helper Card (Verification)
+  helperCard: {
     flexDirection: "row",
     alignItems: "flex-start",
-    backgroundColor: "#FEF3C7",
-    padding: 16,
-    borderRadius: 16,
+    gap: 12,
     marginTop: 20,
+    padding: 16,
+    borderRadius: 14,
+    backgroundColor: "#FFF5F0",
     borderWidth: 1,
-    borderColor: "#FDE68A",
+    borderColor: "#FDE8DF",
   },
-  helperEmoji: {
-    fontSize: 18,
-    marginRight: 10,
-    marginTop: 2,
+  helperIconWrapper: {
+    marginTop: 1,
   },
   helperText: {
     flex: 1,
     fontSize: 14,
-    color: "#92400E",
+    color: "#8A5A4A",
     lineHeight: 20,
     fontWeight: "500",
+  },
+
+  // Footer — same as SignIn
+  footer: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 36,
+  },
+  footerText: {
+    fontSize: 15,
+    color: "#9A9A9A",
+    fontWeight: "500",
+  },
+  footerLink: {
+    fontSize: 15,
+    color: "#E8734A",
+    fontWeight: "700",
   },
 });

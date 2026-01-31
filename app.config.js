@@ -7,6 +7,8 @@ export default {
     version: "1.0.0",
     scheme: "petadoption",
 
+    icon: "./assets/images/icon1.png",
+
     android: {
       package: "com.cmru.petadoption",
       usesCleartextTraffic: true,
