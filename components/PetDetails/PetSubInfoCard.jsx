@@ -33,7 +33,7 @@ const styles = StyleSheet.create({
   icon: {
     width: 40,
     height: 40,
-    resizeMode: "contain",
+    resizeMode: "cover",
   },
   textContainer: {
     flex: 1,

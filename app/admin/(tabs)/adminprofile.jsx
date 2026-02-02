@@ -164,23 +164,23 @@ export default function AdminProfile() {
   const quickStats = useMemo(
     () => [
       {
-        label: "Users",
+        label: "ผู้ใช้ทั้งหมด",
         value: stats.totalUsers == null ? "—" : String(stats.totalUsers),
         icon: "people",
       },
       {
-        label: "Pending",
+        label: "ผู้ใช้ที่ยังไม่ได้ยืนยันตัวตน",
         value:
           stats.pendingApprovals == null ? "—" : String(stats.pendingApprovals),
         icon: "alert-circle",
       },
       {
-        label: "Volunteers",
+        label: "อาสาสมัคร",
         value: stats.volunteers == null ? "—" : String(stats.volunteers),
         icon: "hand-left",
       },
       {
-        label: "Adopted",
+        label: "ได้รับการอุปการะแล้ว",
         value:
           stats.adoptionsSuccess == null ? "—" : String(stats.adoptionsSuccess),
         icon: "heart",
@@ -191,13 +191,13 @@ export default function AdminProfile() {
 
   const adminActions = [
     {
-      label: "Users",
+      label: "จัดการการผู้ใช้",
       icon: "people-outline",
       color: "#6366f1",
       onPress: () => router.push("/admin/users"),
     },
     {
-      label: "Reports",
+      label: "รายงานโพสต์",
       icon: "document-text-outline",
       color: "#f59e0b",
       onPress: () => router.push("/admin/user-reports"),
@@ -319,7 +319,7 @@ export default function AdminProfile() {
         )}
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Quick Stats</Text>
+          <Text style={styles.sectionTitle}>สถิติด่วน</Text>
           <View style={styles.statsGridWrap}>
             {quickStats.map((stat, idx) => (
               <View key={idx} style={styles.statCardHalf}>
@@ -334,7 +334,7 @@ export default function AdminProfile() {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Admin Tools</Text>
+          <Text style={styles.sectionTitle}>เครื่องมือผู้ดูแลระบบ</Text>
           <View style={styles.toolsGrid}>
             {adminActions.map((action, idx) => (
               <Pressable

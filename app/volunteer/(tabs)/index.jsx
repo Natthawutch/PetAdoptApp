@@ -2,7 +2,7 @@
 // VolunteerHome.jsx - Stable Realtime + Reliable Sync (FULL)
 // ✅ Fixed: fetchUnreadCount now uses volunteerUuid (Supabase UUID) instead of userId (Clerk ID)
 // ✅ Fixed: Realtime notifications listener uses volunteerUuid
-// ✅ Includes unread notifications badge that clears when read (via focus refresh)
+// ✅ UPDATED: "ช่วยเหลือไม่สำเร็จ" shows TOTAL failed cases (no 7-day filter)
 
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
@@ -61,7 +61,7 @@ export default function VolunteerHome() {
     totalCases: 0,
     activeReports: 0,
     completedCases: 0,
-    completed7d: 0,
+    failedCases: 0, // ✅ total failed (no 7-day filter)
   });
 
   const [statsLoading, setStatsLoading] = useState(true);
@@ -176,7 +176,7 @@ export default function VolunteerHome() {
     }
   }, [getSupabase, formatTimeLabel]);
 
-  // ✅ FIXED: fetchUnreadCount now uses volunteerUuid
+  // ✅ FIXED: fetchUnreadCount now uses volunteerUuid (Supabase UUID)
   const fetchUnreadCount = useCallback(async () => {
     try {
       const supabase = await getSupabase();
@@ -196,7 +196,7 @@ export default function VolunteerHome() {
       const { count, error } = await supabase
         .from("notifications")
         .select("id", { count: "exact", head: true })
-        .eq("user_id", vu) // ✅ Changed from userId to vu (UUID)
+        .eq("user_id", vu)
         .eq("unread", true);
 
       if (error) throw error;
@@ -229,40 +229,45 @@ export default function VolunteerHome() {
         if (mountedRef.current) setVolunteerUuid(vu);
       }
 
-      const [{ count: completedCount }, { count: activeCount }] =
-        await Promise.all([
-          supabase
-            .from("reports")
-            .select("id", { count: "exact", head: true })
-            .eq("assigned_volunteer_id", vu)
-            .eq("status", "completed"),
-          supabase
-            .from("reports")
-            .select("id", { count: "exact", head: true })
-            .eq("assigned_volunteer_id", vu)
-            .eq("status", "in_progress"),
-        ]);
+      const [
+        { count: completedCount, error: completedErr },
+        { count: activeCount, error: activeErr },
+        { count: failedCount, error: failedErr },
+      ] = await Promise.all([
+        supabase
+          .from("reports")
+          .select("id", { count: "exact", head: true })
+          .eq("assigned_volunteer_id", vu)
+          .eq("status", "completed"),
+        supabase
+          .from("reports")
+          .select("id", { count: "exact", head: true })
+          .eq("assigned_volunteer_id", vu)
+          .eq("status", "in_progress"),
+        supabase
+          .from("reports")
+          .select("id", { count: "exact", head: true })
+          .eq("assigned_volunteer_id", vu)
+          .eq("status", "failed"),
+      ]);
 
-      const from7dIso = new Date(Date.now() - 7 * 86400000).toISOString();
-      const { count: completed7dCount, error: c7Err } = await supabase
-        .from("reports")
-        .select("id", { count: "exact", head: true })
-        .eq("assigned_volunteer_id", vu)
-        .eq("status", "completed")
-        .gte("completed_at", from7dIso);
+      if (completedErr) throw completedErr;
+      if (activeErr) throw activeErr;
+      if (failedErr) throw failedErr;
 
-      if (c7Err) throw c7Err;
       if (!mountedRef.current) return;
 
       const completedCases = completedCount || 0;
       const activeReports = activeCount || 0;
-      const totalCases = completedCases + activeReports;
+      const failedCases = failedCount || 0;
+
+      const totalCases = completedCases + activeReports + failedCases;
 
       setStats({
         totalCases,
         activeReports,
         completedCases,
-        completed7d: completed7dCount || 0,
+        failedCases,
       });
 
       setLastSyncLabel(formatTimeLabel());
@@ -362,7 +367,7 @@ export default function VolunteerHome() {
       try {
         if (!userId) return;
 
-        // ✅ กันซ้อน
+        // ✅ prevent overlaps
         if (connectInFlightRef.current) return;
         if (connectLockRef.current && !force) return;
 
@@ -371,7 +376,7 @@ export default function VolunteerHome() {
 
         setRealtimeStatus("CONNECTING");
 
-        // ✅ ถ้ามี channel เดิมอยู่ -> remove ก่อน
+        // ✅ remove old channel if any
         if (channelRef.current) {
           await removeRealtimeChannel();
         }
@@ -424,7 +429,7 @@ export default function VolunteerHome() {
           );
         }
 
-        // ✅ FIXED: Listener C uses volunteerUuid instead of userId
+        // ✅ Listener C: notifications for me (uses volunteerUuid)
         if (volunteerUuid) {
           channel.on(
             "postgres_changes",
@@ -432,7 +437,7 @@ export default function VolunteerHome() {
               event: "*",
               schema: "public",
               table: "notifications",
-              filter: `user_id=eq.${volunteerUuid}`, // ✅ Changed from userId to volunteerUuid
+              filter: `user_id=eq.${volunteerUuid}`,
             },
             () => {
               if (!mountedRef.current) return;
@@ -455,7 +460,7 @@ export default function VolunteerHome() {
             scheduleDebouncedUrgent(250);
             if (volunteerUuid) {
               scheduleDebouncedStats(350);
-              scheduleDebouncedNotif(300); // ✅ Only sync if volunteerUuid exists
+              scheduleDebouncedNotif(300);
             }
             return;
           }
@@ -720,7 +725,7 @@ export default function VolunteerHome() {
           </View>
         </TouchableOpacity>
 
-        {/* Guide: same primary style */}
+        {/* Guide */}
         <TouchableOpacity
           style={[styles.primaryCard, styles.primaryCalm, styles.guideCard]}
           onPress={goGuide}
@@ -788,9 +793,9 @@ export default function VolunteerHome() {
             tone="blue"
           />
           <StatTile
-            icon="calendar-outline"
-            title="ปิดเคส 7 วัน"
-            value={stats.completed7d}
+            icon="close-circle-outline"
+            title="ช่วยเหลือไม่สำเร็จ"
+            value={stats.failedCases}
             unit="เคส"
             tone="pink"
           />

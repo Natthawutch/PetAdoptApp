@@ -42,9 +42,6 @@ export default function VolunteerProfile() {
   const didFetchRef = useRef(false);
   const lastUserIdRef = useRef(null);
 
-  // REST client (queries)
-  const supabaseRef = useRef(null);
-
   // realtime client + channel
   const rtRef = useRef(null);
   const channelRef = useRef(null);
@@ -63,6 +60,7 @@ export default function VolunteerProfile() {
   // one-time log per focus
   const didLogSubscribedRef = useRef(false);
 
+  // ✅ ดึง token ใหม่ทุกครั้ง
   const getClerkToken = useCallback(async () => {
     if (!isLoaded || !isSignedIn) return null;
     for (let i = 0; i < 6; i++) {
@@ -75,14 +73,11 @@ export default function VolunteerProfile() {
     return null;
   }, [isLoaded, isSignedIn, getToken]);
 
-  const ensureSupabase = useCallback(async () => {
-    if (supabaseRef.current) return supabaseRef.current;
-
+  // ✅ สร้าง supabase client ใหม่ทุกครั้ง (ไม่ cache)
+  const getSupabaseClient = useCallback(async () => {
     const token = await getClerkToken();
     if (!token) return null;
-
-    supabaseRef.current = createClerkSupabaseClient(token);
-    return supabaseRef.current;
+    return createClerkSupabaseClient(token);
   }, [getClerkToken]);
 
   const refreshRealtimeAuth = useCallback(async () => {
@@ -102,12 +97,14 @@ export default function VolunteerProfile() {
     setStats({ totalTasks: 0, activeTasks: 0, completedTasks: 0 });
   }, []);
 
+  // ✅ ใช้ getSupabaseClient แทน ensureSupabase
   const fetchStatsByUuid = useCallback(
     async (uuid) => {
       if (!uuid || !mountedRef.current) return;
 
       try {
-        const supabase = await ensureSupabase();
+        // ✅ ดึง token ใหม่ทุกครั้ง
+        const supabase = await getSupabaseClient();
         if (!supabase) return;
 
         const { data: allTasks, error } = await supabase
@@ -134,7 +131,7 @@ export default function VolunteerProfile() {
         console.error("Error fetching volunteer stats:", e);
       }
     },
-    [ensureSupabase],
+    [getSupabaseClient],
   );
 
   const fetchVolunteerData = useCallback(
@@ -148,7 +145,8 @@ export default function VolunteerProfile() {
           return;
         }
 
-        const supabase = await ensureSupabase();
+        // ✅ ดึง token ใหม่
+        const supabase = await getSupabaseClient();
         if (!supabase) {
           resetUI();
           return;
@@ -169,7 +167,6 @@ export default function VolunteerProfile() {
           return;
         }
 
-        // ✅ กัน set uuid ซ้ำ (กัน effect ยิงซ้ำ)
         setVolunteerUuid((prev) => (prev === userData.id ? prev : userData.id));
 
         await fetchStatsByUuid(userData.id);
@@ -180,7 +177,14 @@ export default function VolunteerProfile() {
         if (mountedRef.current) setInitialLoading(false);
       }
     },
-    [userId, isLoaded, isSignedIn, ensureSupabase, resetUI, fetchStatsByUuid],
+    [
+      userId,
+      isLoaded,
+      isSignedIn,
+      getSupabaseClient,
+      resetUI,
+      fetchStatsByUuid,
+    ],
   );
 
   // Initial load
@@ -238,8 +242,6 @@ export default function VolunteerProfile() {
     if (subscribedRef.current || subscribingRef.current) return;
     subscribingRef.current = true;
 
-    await ensureSupabase();
-
     const token = await refreshRealtimeAuth();
     if (!token || !isFocusedRef.current) {
       subscribingRef.current = false;
@@ -267,7 +269,6 @@ export default function VolunteerProfile() {
           filter: `assigned_volunteer_id=eq.${volunteerUuid}`,
         },
         (payload) => {
-          // log เฉพาะ event จริง
           console.info("[RT EVENT]", payload.eventType);
 
           if (debounceRef.current) clearTimeout(debounceRef.current);
@@ -283,7 +284,6 @@ export default function VolunteerProfile() {
           subscribedRef.current = true;
           subscribingRef.current = false;
 
-          // ✅ log ครั้งเดียวต่อ focus แน่นอน
           if (!didLogSubscribedRef.current) {
             didLogSubscribedRef.current = true;
             console.info("[RT] SUBSCRIBED");
@@ -305,23 +305,13 @@ export default function VolunteerProfile() {
 
     channelRef.current = channel;
     fetchStatsByUuid(volunteerUuid);
-  }, [
-    volunteerUuid,
-    ensureSupabase,
-    refreshRealtimeAuth,
-    cleanupRealtime,
-    fetchStatsByUuid,
-  ]);
+  }, [volunteerUuid, refreshRealtimeAuth, cleanupRealtime, fetchStatsByUuid]);
 
-  // ✅ สำคัญ: subscribe เฉพาะตอนหน้าถูก focus และ cleanup ตอน blur
   useFocusEffect(
     useCallback(() => {
       isFocusedRef.current = true;
-
-      // reset log once per focus
       didLogSubscribedRef.current = false;
 
-      // try setup if uuid already exists
       setupRealtime();
 
       return () => {
@@ -331,7 +321,6 @@ export default function VolunteerProfile() {
     }, [setupRealtime, cleanupRealtime]),
   );
 
-  // ✅ ถ้า uuid เปลี่ยนตอนกำลัง focus → setup ใหม่
   useEffect(() => {
     if (!isFocusedRef.current) return;
     setupRealtime();
@@ -416,8 +405,6 @@ export default function VolunteerProfile() {
                 </Text>
               </View>
             </View>
-
-            {/* ลบปุ่มตั้งค่า */}
           </View>
         </View>
 

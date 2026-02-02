@@ -5,6 +5,7 @@ import { useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FlatList,
+  Image,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -34,7 +35,6 @@ export default function Notifications() {
 
     const currentToken = supabaseRef.current?.__clerkToken;
 
-    // 🔥 ถ้า token เปลี่ยน → destroy & recreate
     if (!supabaseRef.current || currentToken !== token) {
       console.log("🔄 Recreate Supabase client (new JWT)");
 
@@ -59,6 +59,7 @@ export default function Notifications() {
       const supabase = await ensureSupabase();
       if (!supabase) return;
 
+      // ✅ ดึง category ด้วย
       const { data, error } = await supabase
         .from("adoption_requests")
         .select(
@@ -67,7 +68,9 @@ export default function Notifications() {
           status,
           created_at,
           pets (
-            name
+            name,
+            image_url,
+            category
           )
         `,
         )
@@ -81,25 +84,20 @@ export default function Notifications() {
     }
   }, [user?.id, ensureSupabase]);
 
-  // keep latest fetch in ref
   useEffect(() => {
     fetchRef.current = fetchRequests;
   }, [fetchRequests]);
 
-  // ✅ โหลดทุกครั้งที่ “เข้าหน้านี้” (focus)
   useFocusEffect(
     useCallback(() => {
       if (!user?.id) return;
 
       fetchRequests();
 
-      return () => {
-        // nothing here (fetch)
-      };
+      return () => {};
     }, [user?.id]),
   );
 
-  // ✅ Realtime: subscribe ตอน focus / unsubscribe ตอน blur
   useFocusEffect(
     useCallback(() => {
       if (!user?.id) return;
@@ -111,7 +109,6 @@ export default function Notifications() {
           const supabase = await ensureSupabase();
           if (!supabase || cancelled) return;
 
-          // ถ้ามีของเก่าอยู่ ลบก่อนเสมอ
           if (channelRef.current) {
             channelRef.current.unsubscribe();
             channelRef.current = null;
@@ -134,7 +131,6 @@ export default function Notifications() {
             .subscribe((status) => {
               console.log("📡 Realtime status:", status);
 
-              // ✅ ถ้า CLOSED ให้เคลียร์ ref เพื่อรอบหน้าสร้างใหม่ได้ชัวร์
               if (status === "CLOSED") {
                 channelRef.current = null;
               }
@@ -146,7 +142,6 @@ export default function Notifications() {
         }
       })();
 
-      // blur/unfocus
       return () => {
         cancelled = true;
         if (channelRef.current) {
@@ -169,6 +164,19 @@ export default function Notifications() {
       rejected: "#f44336",
     };
 
+    const petName = item.pets?.name || "สัตว์เลี้ยง";
+    const petImage = item.pets?.image_url;
+    const category = item.pets?.category;
+
+    // ✅ เลือก emoji ตามประเภทสัตว์
+    const getEmojiByCategory = (cat) => {
+      if (!cat) return "🐾";
+      const lower = cat.toLowerCase();
+      if (lower.includes("สุนัข") || lower.includes("dog")) return "🐶";
+      if (lower.includes("แมว") || lower.includes("cat")) return "🐱";
+      return "🐾";
+    };
+
     return (
       <TouchableOpacity
         style={styles.item}
@@ -176,14 +184,27 @@ export default function Notifications() {
         activeOpacity={0.85}
       >
         <View style={styles.row}>
-          <LinearGradient colors={["#667eea", "#764ba2"]} style={styles.icon}>
-            <Text style={{ fontSize: 20 }}>🐶</Text>
-          </LinearGradient>
+          {/* ✅ แสดงรูปสัตว์จริง */}
+          {petImage ? (
+            <Image
+              source={{ uri: petImage }}
+              style={styles.petImage}
+              resizeMode="cover"
+            />
+          ) : (
+            // ✅ Fallback: gradient + emoji ตาม category
+            <LinearGradient
+              colors={["#667eea", "#764ba2"]}
+              style={styles.petImage}
+            >
+              <Text style={styles.petEmoji}>
+                {getEmojiByCategory(category)}
+              </Text>
+            </LinearGradient>
+          )}
 
           <View style={{ flex: 1 }}>
-            <Text style={styles.title}>
-              คำขอรับเลี้ยง {item.pets?.name || "สัตว์เลี้ยง"}
-            </Text>
+            <Text style={styles.title}>คำขอรับเลี้ยง {petName}</Text>
 
             <Text
               style={[
@@ -249,17 +270,30 @@ const styles = StyleSheet.create({
     shadowColor: "#000",
     shadowOpacity: 0.1,
     shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
   },
-  row: { flexDirection: "row", gap: 12 },
-  icon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    alignItems: "center",
+  row: { flexDirection: "row", gap: 12, alignItems: "center" },
+
+  // ✅ รูปสัตว์
+  petImage: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: "#f0f0f0",
     justifyContent: "center",
+    alignItems: "center",
   },
-  title: { fontSize: 16, fontWeight: "700" },
-  subtitle: { marginTop: 4, fontWeight: "600" },
+  petEmoji: {
+    fontSize: 28,
+  },
+
+  title: { fontSize: 16, fontWeight: "700", color: "#1f2937" },
+  subtitle: { marginTop: 4, fontWeight: "600", fontSize: 14 },
   time: { fontSize: 12, color: "#999", marginTop: 6 },
-  emptyText: { textAlign: "center", marginTop: 40, color: "#999" },
+  emptyText: {
+    textAlign: "center",
+    marginTop: 40,
+    color: "#999",
+    fontSize: 16,
+  },
 });

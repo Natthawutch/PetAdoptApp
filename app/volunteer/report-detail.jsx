@@ -17,9 +17,27 @@ import {
 } from "react-native";
 import { createClerkSupabaseClient } from "../../config/supabaseClient";
 
-// ✅ safer base64 -> ArrayBuffer for RN
 import { decode } from "base64-arraybuffer";
 import * as Crypto from "expo-crypto";
+
+/* ----------------------------- Utils ----------------------------- */
+const MAX_EVIDENCE = 3;
+
+const uniqByUri = (arr) =>
+  arr.filter((v, i, a) => a.findIndex((x) => x.uri === v.uri) === i);
+
+const formatThaiDateTime = (iso) => {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleString("th-TH", {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+};
 
 export default function ReportDetail() {
   const { id } = useLocalSearchParams();
@@ -34,12 +52,14 @@ export default function ReportDetail() {
 
   const [loading, setLoading] = useState(true);
 
-  // ✅ หลักฐาน
-  const [evidence, setEvidence] = useState([]); // [{ uri }]
+  // ✅ หลักฐาน [{ uri }]
+  const [evidence, setEvidence] = useState([]);
   const [submitting, setSubmitting] = useState(false);
 
-  // ✅ กันกดรับเคสซ้ำ
   const [accepting, setAccepting] = useState(false);
+
+  // ✅ ปิดเคสไม่สำเร็จ
+  const [failing, setFailing] = useState(false);
 
   useEffect(() => {
     loadReport();
@@ -52,7 +72,7 @@ export default function ReportDetail() {
       const token = await getToken({ template: "supabase" });
       const supabase = createClerkSupabaseClient(token);
 
-      // 0) current user uuid
+      // current user uuid (table users.id)
       if (user?.id) {
         const { data: me, error: meErr } = await supabase
           .from("users")
@@ -63,7 +83,7 @@ export default function ReportDetail() {
         if (!meErr) setCurrentUserId(me?.id || null);
       }
 
-      // 1) report
+      // report
       const { data: reportData, error: reportError } = await supabase
         .from("reports")
         .select("*")
@@ -73,7 +93,7 @@ export default function ReportDetail() {
       if (reportError) throw reportError;
       setReport(reportData);
 
-      // 2) reporter (reports.user_id เก็บ clerk_id เป็น text)
+      // reporter (รายงานของคุณเก็บ user_id เป็น clerk_id)
       if (reportData.user_id) {
         const { data: userData } = await supabase
           .from("users")
@@ -85,7 +105,7 @@ export default function ReportDetail() {
         setReporter(null);
       }
 
-      // 3) assigned volunteer (reports.assigned_volunteer_id เป็น uuid -> users.id)
+      // assigned volunteer (รายงานของคุณเก็บ assigned_volunteer_id เป็น users.id)
       if (reportData.assigned_volunteer_id) {
         const { data: volunteerData } = await supabase
           .from("users")
@@ -116,11 +136,6 @@ export default function ReportDetail() {
     );
   }, [report, currentUserId]);
 
-  /**
-   * ✅ Atomic Claim:
-   * update ... where id=? AND status='pending' AND assigned_volunteer_id IS NULL
-   * if 0 rows updated => someone already took it
-   */
   const handleAccept = async () => {
     if (!report?.id) return;
     if (!user?.id) {
@@ -143,7 +158,6 @@ export default function ReportDetail() {
             });
             const supabase = createClerkSupabaseClient(token);
 
-            // current user uuid (users.id)
             const { data: currentUser, error: userErr } = await supabase
               .from("users")
               .select("id")
@@ -155,7 +169,6 @@ export default function ReportDetail() {
               return;
             }
 
-            // ✅ FIX: remove .limit(1) to avoid PGRST109
             const { data: updatedRows, error: updErr } = await supabase
               .from("reports")
               .update({
@@ -169,7 +182,6 @@ export default function ReportDetail() {
 
             if (updErr) throw updErr;
 
-            // ✅ no rows updated => already taken / status changed
             if (!updatedRows || updatedRows.length === 0) {
               Alert.alert(
                 "รับเคสไม่สำเร็จ",
@@ -203,7 +215,7 @@ export default function ReportDetail() {
     }
   };
 
-  // ============ ✅ Evidence picker ============
+  /* ================== ✅ Evidence picker ================== */
   const pickEvidence = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== "granted") {
@@ -211,16 +223,28 @@ export default function ReportDetail() {
       return;
     }
 
+    const remain = MAX_EVIDENCE - evidence.length;
+    if (remain <= 0) {
+      Alert.alert("ครบแล้ว", `แนบได้สูงสุด ${MAX_EVIDENCE} รูป`);
+      return;
+    }
+
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       allowsMultipleSelection: true,
-      selectionLimit: 3,
+      selectionLimit: remain,
       quality: 0.5,
     });
 
     if (!result.canceled) {
       const assets = result.assets || [];
-      setEvidence(assets.map((a) => ({ uri: a.uri })));
+      const incoming = assets
+        .map((a) => ({ uri: a.uri }))
+        .filter((x) => !!x.uri);
+
+      setEvidence((prev) =>
+        uniqByUri([...prev, ...incoming]).slice(0, MAX_EVIDENCE),
+      );
     }
   };
 
@@ -237,7 +261,11 @@ export default function ReportDetail() {
 
     if (!result.canceled) {
       const asset = result.assets?.[0];
-      if (asset?.uri) setEvidence([{ uri: asset.uri }]);
+      if (asset?.uri) {
+        setEvidence((prev) =>
+          uniqByUri([...prev, { uri: asset.uri }]).slice(0, MAX_EVIDENCE),
+        );
+      }
     }
   };
 
@@ -245,7 +273,7 @@ export default function ReportDetail() {
     setEvidence((prev) => prev.filter((_, i) => i !== index));
   };
 
-  // ============ ✅ Upload helper ============
+  /* ================== ✅ Upload helper ================== */
   const getExt = (uri) => {
     const clean = uri.split("?")[0].toLowerCase();
     const match = clean.match(/\.(png|jpg|jpeg|webp)$/);
@@ -262,7 +290,7 @@ export default function ReportDetail() {
     const bucket = "report-evidence";
     const uploadedUrls = [];
 
-    const items = evidenceArr.slice(0, 3);
+    const items = evidenceArr.slice(0, MAX_EVIDENCE);
 
     for (let i = 0; i < items.length; i++) {
       const uri = items[i].uri;
@@ -277,10 +305,8 @@ export default function ReportDetail() {
       const ext = getExt(uri);
       const contentType = guessContentType(ext);
 
-      // ✅ RN-safe conversion
       const arrayBuffer = decode(base64);
 
-      // ✅ collision-safe filename
       const rand = await Crypto.digestStringAsync(
         Crypto.CryptoDigestAlgorithm.SHA256,
         `${Date.now()}-${Math.random()}-${i}`,
@@ -343,6 +369,7 @@ export default function ReportDetail() {
                 status: "completed",
                 completed_at: new Date().toISOString(),
                 evidence_urls: urls,
+                completion_note: "ช่วยเหลือสำเร็จ",
               })
               .eq("id", report.id);
 
@@ -359,6 +386,110 @@ export default function ReportDetail() {
           }
         },
       },
+    ]);
+  };
+
+  // ✅ ปิดเคสแบบช่วยเหลือไม่สำเร็จ (ไม่บังคับหลักฐาน)
+  const closeFailed = async (note) => {
+    if (!canComplete) {
+      Alert.alert("ทำไม่ได้", "คุณไม่ใช่อาสาที่รับผิดชอบเคสนี้");
+      return;
+    }
+    if (!report?.id) return;
+    if (failing) return;
+
+    Alert.alert(
+      "ปิดเคส (ช่วยเหลือไม่สำเร็จ)",
+      `ยืนยันการปิดเคสเป็น "ช่วยเหลือไม่สำเร็จ" ใช่ไหม?\nเหตุผล: ${note}`,
+      [
+        { text: "ยกเลิก", style: "cancel" },
+        {
+          text: "ยืนยัน",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              setFailing(true);
+
+              const token = await getToken({
+                template: "supabase",
+                skipCache: true,
+              });
+              const supabase = createClerkSupabaseClient(token);
+
+              // ถ้ามีแนบรูปไว้ และอยากเก็บไว้เป็นหลักฐานแม้ช่วยไม่สำเร็จ ก็อัปโหลดได้
+              let urls = Array.isArray(report?.evidence_urls)
+                ? report.evidence_urls
+                : [];
+
+              if (evidence.length > 0) {
+                const newUrls = await uploadEvidenceImages(
+                  supabase,
+                  report.id,
+                  evidence,
+                );
+                urls = [...urls, ...newUrls].slice(0, MAX_EVIDENCE);
+              }
+
+              // update แบบมีเงื่อนไข (กัน race condition)
+              const { data: updatedRows, error: updErr } = await supabase
+                .from("reports")
+                .update({
+                  status: "failed", // ✅ เพิ่ม status ใหม่ (เป็น text อยู่แล้ว ใช้ได้เลย)
+                  completed_at: new Date().toISOString(), // ใช้ completed_at เป็น "เวลาปิดเคส" ได้เลย ไม่ต้องเพิ่มคอลัมน์ใหม่
+                  evidence_urls: urls.length ? urls : null,
+                  completion_note: note, // ✅ ใช้คอลัมน์เดิมเก็บเหตุผล
+                })
+                .eq("id", report.id)
+                .eq("status", "in_progress")
+                .eq("assigned_volunteer_id", currentUserId)
+                .select("id, status");
+
+              if (updErr) throw updErr;
+
+              if (!updatedRows || updatedRows.length === 0) {
+                Alert.alert(
+                  "ปิดเคสไม่สำเร็จ",
+                  "สถานะเคสเปลี่ยนไปแล้ว หรือคุณไม่ใช่ผู้รับผิดชอบ",
+                );
+                await loadReport();
+                return;
+              }
+
+              Alert.alert("สำเร็จ", "ปิดเคสเป็นช่วยเหลือไม่สำเร็จแล้ว");
+              setEvidence([]);
+              await loadReport();
+            } catch (e) {
+              console.error("❌ close failed error:", e);
+              Alert.alert("เกิดข้อผิดพลาด", "ไม่สามารถปิดเคสได้");
+            } finally {
+              setFailing(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const handleFailCase = () => {
+    if (!canComplete) {
+      Alert.alert("ทำไม่ได้", "คุณไม่ใช่อาสาที่รับผิดชอบเคสนี้");
+      return;
+    }
+
+    Alert.alert("ปิดเคส (ช่วยเหลือไม่สำเร็จ)", "เลือกเหตุผล", [
+      {
+        text: "ไปแล้วไม่พบสัตว์",
+        onPress: () => closeFailed("ไปแล้วไม่พบสัตว์"),
+      },
+      {
+        text: "ข้อมูล/พิกัดไม่ถูกต้อง",
+        onPress: () => closeFailed("ข้อมูล/พิกัดไม่ถูกต้อง"),
+      },
+      {
+        text: "เข้าถึงไม่ได้/สัตว์หนี/ช่วยไม่ได้",
+        onPress: () => closeFailed("เข้าถึงไม่ได้/สัตว์หนี/ช่วยไม่ได้"),
+      },
+      { text: "ยกเลิก", style: "cancel" },
     ]);
   };
 
@@ -385,6 +516,13 @@ export default function ReportDetail() {
           icon: "checkmark-circle",
           label: "เสร็จสิ้น",
         };
+      case "failed":
+        return {
+          bg: "#fef3c7",
+          text: "#d97706",
+          icon: "close-circle",
+          label: "ช่วยเหลือไม่สำเร็จ",
+        };
       default:
         return {
           bg: "#f1f5f9",
@@ -393,21 +531,6 @@ export default function ReportDetail() {
           label: "ไม่ทราบสถานะ",
         };
     }
-  };
-
-  const getTimeAgo = (dateString) => {
-    const now = new Date();
-    const past = new Date(dateString);
-    const diffMs = now - past;
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffMins < 1) return "เมื่อสักครู่";
-    if (diffMins < 60) return `${diffMins} นาทีที่แล้ว`;
-    if (diffHours < 24) return `${diffHours} ชั่วโมงที่แล้ว`;
-    if (diffDays < 7) return `${diffDays} วันที่แล้ว`;
-    return past.toLocaleDateString("th-TH");
   };
 
   if (loading) {
@@ -503,9 +626,22 @@ export default function ReportDetail() {
         <View style={styles.timeRow}>
           <Ionicons name="time-outline" size={16} color="#94a3b8" />
           <Text style={styles.timeText}>
-            แจ้งเมื่อ {getTimeAgo(report.created_at)}
+            แจ้งเมื่อ {formatThaiDateTime(report.created_at)}
           </Text>
         </View>
+
+        {!!report.completed_at && (
+          <View style={[styles.timeRow, { marginTop: 6 }]}>
+            <Ionicons
+              name="checkmark-circle-outline"
+              size={16}
+              color="#94a3b8"
+            />
+            <Text style={styles.timeText}>
+              ปิดเคสเมื่อ {formatThaiDateTime(report.completed_at)}
+            </Text>
+          </View>
+        )}
       </View>
 
       <View style={styles.section}>
@@ -567,7 +703,6 @@ export default function ReportDetail() {
           </View>
         </View>
 
-        {/* ✅ แสดงทั้งกรณีมี/ไม่มีคนรับ */}
         <View style={styles.infoCard}>
           <View style={styles.infoIcon}>
             <Ionicons name="checkmark-circle" size={24} color="#22c55e" />
@@ -594,7 +729,8 @@ export default function ReportDetail() {
         </View>
       </View>
 
-      {report.status === "completed" &&
+      {/* ✅ แสดงหลักฐานและโน้ตเมื่อปิดเคส (ทั้งสำเร็จ/ไม่สำเร็จ) */}
+      {(report.status === "completed" || report.status === "failed") &&
         Array.isArray(report.evidence_urls) &&
         report.evidence_urls.length > 0 && (
           <View style={{ paddingHorizontal: 20, paddingBottom: 10 }}>
@@ -606,7 +742,7 @@ export default function ReportDetail() {
                 marginBottom: 10,
               }}
             >
-              หลักฐานการช่วยเหลือ
+              หลักฐาน
             </Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false}>
               {report.evidence_urls.map((url, idx) => (
@@ -623,6 +759,18 @@ export default function ReportDetail() {
                 />
               ))}
             </ScrollView>
+          </View>
+        )}
+
+      {(report.status === "completed" || report.status === "failed") &&
+        !!report.completion_note && (
+          <View style={{ paddingHorizontal: 20, paddingBottom: 10 }}>
+            <View style={[styles.infoBox, { backgroundColor: "#f1f5f9" }]}>
+              <Ionicons name="document-text" size={20} color="#334155" />
+              <Text style={[styles.infoBoxText, { color: "#334155" }]}>
+                หมายเหตุ: {report.completion_note}
+              </Text>
+            </View>
           </View>
         )}
 
@@ -652,7 +800,7 @@ export default function ReportDetail() {
             <Ionicons name="information-circle" size={20} color="#2563eb" />
             <Text style={styles.infoBoxText}>
               {canComplete
-                ? "คุณรับผิดชอบเคสนี้อยู่ — แนบหลักฐานแล้วกดปิดเคส"
+                ? `คุณรับผิดชอบเคสนี้อยู่ — แนบหลักฐาน (สูงสุด ${MAX_EVIDENCE} รูป) แล้วกดปิดเคส`
                 : "เคสนี้กำลังดำเนินการโดยอาสาสมัคร"}
             </Text>
           </View>
@@ -663,17 +811,19 @@ export default function ReportDetail() {
                 <TouchableOpacity
                   style={styles.secondaryBtn}
                   onPress={pickEvidence}
-                  disabled={submitting}
+                  disabled={submitting || failing}
                   activeOpacity={0.85}
                 >
                   <Ionicons name="image-outline" size={18} color="#111827" />
-                  <Text style={styles.secondaryBtnText}>แนบรูป</Text>
+                  <Text style={styles.secondaryBtnText}>
+                    แนบรูป ({evidence.length}/{MAX_EVIDENCE})
+                  </Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity
                   style={styles.secondaryBtn}
                   onPress={takeEvidencePhoto}
-                  disabled={submitting}
+                  disabled={submitting || failing}
                   activeOpacity={0.85}
                 >
                   <Ionicons name="camera-outline" size={18} color="#111827" />
@@ -697,6 +847,7 @@ export default function ReportDetail() {
                         onPress={() => removeEvidenceAt(idx)}
                         style={styles.removeEvidenceBtn}
                         activeOpacity={0.85}
+                        disabled={submitting || failing}
                       >
                         <Ionicons name="close" size={14} color="#fff" />
                       </TouchableOpacity>
@@ -705,10 +856,11 @@ export default function ReportDetail() {
                 </ScrollView>
               )}
 
+              {/* ✅ ปิดเคสสำเร็จ (ต้องแนบรูป) */}
               <TouchableOpacity
                 style={[styles.completeButton, submitting && { opacity: 0.75 }]}
                 onPress={handleCompleteWithEvidence}
-                disabled={submitting}
+                disabled={submitting || failing}
                 activeOpacity={0.85}
               >
                 {submitting ? (
@@ -718,6 +870,25 @@ export default function ReportDetail() {
                     <Ionicons name="checkmark-done" size={20} color="#fff" />
                     <Text style={styles.completeButtonText}>
                       ปิดเคส (แนบหลักฐาน)
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+
+              {/* ✅ ปิดเคสไม่สำเร็จ (ไม่บังคับแนบรูป) */}
+              <TouchableOpacity
+                style={[styles.failButton, failing && { opacity: 0.75 }]}
+                onPress={handleFailCase}
+                disabled={failing || submitting}
+                activeOpacity={0.85}
+              >
+                {failing ? (
+                  <ActivityIndicator color="#fff" />
+                ) : (
+                  <>
+                    <Ionicons name="close-circle" size={20} color="#fff" />
+                    <Text style={styles.failButtonText}>
+                      ปิดเคส (ช่วยเหลือไม่สำเร็จ)
                     </Text>
                   </>
                 )}
@@ -733,6 +904,17 @@ export default function ReportDetail() {
             <Ionicons name="checkmark-circle" size={20} color="#16a34a" />
             <Text style={[styles.infoBoxText, { color: "#16a34a" }]}>
               เคสนี้ดำเนินการเสร็จสิ้นแล้ว
+            </Text>
+          </View>
+        </View>
+      )}
+
+      {report.status === "failed" && (
+        <View style={styles.actionSection}>
+          <View style={[styles.infoBox, { backgroundColor: "#fef3c7" }]}>
+            <Ionicons name="close-circle" size={20} color="#d97706" />
+            <Text style={[styles.infoBoxText, { color: "#d97706" }]}>
+              เคสนี้ปิดแล้ว (ช่วยเหลือไม่สำเร็จ)
             </Text>
           </View>
         </View>
@@ -958,4 +1140,22 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   completeButtonText: { color: "#fff", fontSize: 16, fontWeight: "800" },
+
+  // ✅ ปุ่มปิดเคสไม่สำเร็จ
+  failButton: {
+    marginTop: 10,
+    backgroundColor: "#f59e0b",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 14,
+    borderRadius: 16,
+    gap: 8,
+    shadowColor: "#f59e0b",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.22,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  failButtonText: { color: "#fff", fontSize: 15, fontWeight: "800" },
 });

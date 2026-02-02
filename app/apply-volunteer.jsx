@@ -6,7 +6,9 @@ import {
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
+  Pressable,
   ScrollView,
   StyleSheet,
   Text,
@@ -16,6 +18,111 @@ import {
 } from "react-native";
 import { createClerkSupabaseClient } from "../config/supabaseClient";
 import Colors from "../constants/Colors";
+
+// ✅ ตัวเลือกพื้นที่
+const AREA_OPTIONS = [
+  "กรุงเทพและปริมณฑล",
+  "ภาคเหนือ",
+  "ภาคตะวันออกเฉียงเหนือ",
+  "ภาคกลาง",
+  "ภาคตะวันออก",
+  "ภาคใต้",
+];
+
+// ✅ ตัวเลือกเวลาว่าง
+const AVAILABILITY_OPTIONS = [
+  "วันธรรมดา (จันทร์-ศุกร์)",
+  "วันหยุดสุดสัปดาห์ (เสาร์-อาทิตย์)",
+  "ตามนัดหมาย",
+  "หลังเลิกงาน/เรียน",
+  "ทุกวัน",
+];
+
+// ✅ Dropdown Component
+function Dropdown({ label, icon, value, options, onSelect, placeholder }) {
+  const [visible, setVisible] = useState(false);
+
+  return (
+    <>
+      <View style={styles.fieldGroup}>
+        <Text style={styles.label}>
+          <Ionicons name={icon} size={16} color="#6b7280" /> {label}
+        </Text>
+
+        <TouchableOpacity
+          style={styles.dropdownButton}
+          onPress={() => setVisible(true)}
+          activeOpacity={0.7}
+        >
+          <Text
+            style={[
+              styles.dropdownButtonText,
+              !value && styles.dropdownPlaceholder,
+            ]}
+          >
+            {value || placeholder}
+          </Text>
+          <Ionicons name="chevron-down" size={20} color="#9ca3af" />
+        </TouchableOpacity>
+      </View>
+
+      {/* Modal */}
+      <Modal
+        visible={visible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setVisible(false)}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => setVisible(false)}
+        >
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>{label}</Text>
+              <TouchableOpacity onPress={() => setVisible(false)}>
+                <Ionicons name="close" size={24} color="#6b7280" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {options.map((option) => (
+                <TouchableOpacity
+                  key={option}
+                  style={[
+                    styles.optionItem,
+                    value === option && styles.optionItemSelected,
+                  ]}
+                  onPress={() => {
+                    onSelect(option);
+                    setVisible(false);
+                  }}
+                  activeOpacity={0.6}
+                >
+                  <Text
+                    style={[
+                      styles.optionText,
+                      value === option && styles.optionTextSelected,
+                    ]}
+                  >
+                    {option}
+                  </Text>
+                  {value === option && (
+                    <Ionicons
+                      name="checkmark"
+                      size={24}
+                      color={Colors.PURPLE}
+                    />
+                  )}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </Pressable>
+      </Modal>
+    </>
+  );
+}
 
 export default function ApplyVolunteer() {
   const router = useRouter();
@@ -95,10 +202,10 @@ export default function ApplyVolunteer() {
           user_id: userId,
           requester_id: user.id,
           phone: p,
-          area: area.trim() || null,
+          area: area || null,
           reason,
           motivation: reason,
-          availability: availability.trim() || null,
+          availability: availability || null,
           experience: experience.trim() || null,
           status: "pending",
         });
@@ -134,7 +241,7 @@ export default function ApplyVolunteer() {
         contentContainerStyle={{ paddingBottom: 30 }}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header with gradient effect */}
+        {/* Header */}
         <View style={styles.header}>
           <TouchableOpacity
             onPress={() => router.back()}
@@ -243,35 +350,25 @@ export default function ApplyVolunteer() {
               </Text>
             </View>
 
-            {/* Area */}
-            <View style={styles.fieldGroup}>
-              <Text style={styles.label}>
-                <Ionicons name="location" size={16} color="#6b7280" />{" "}
-                พื้นที่/เขตที่สะดวก
-              </Text>
-              <TextInput
-                value={area}
-                onChangeText={setArea}
-                placeholder="เช่น บางนา, รังสิต, เมืองเชียงใหม่"
-                placeholderTextColor="#9ca3af"
-                style={styles.input}
-              />
-            </View>
+            {/* ✅ Area Dropdown */}
+            <Dropdown
+              label="พื้นที่/เขตที่สะดวก"
+              icon="location"
+              value={area}
+              options={AREA_OPTIONS}
+              onSelect={setArea}
+              placeholder="เลือกพื้นที่"
+            />
 
-            {/* Availability */}
-            <View style={styles.fieldGroup}>
-              <Text style={styles.label}>
-                <Ionicons name="time" size={16} color="#6b7280" />{" "}
-                ว่างวัน/เวลาไหนบ้าง?
-              </Text>
-              <TextInput
-                value={availability}
-                onChangeText={setAvailability}
-                placeholder="เช่น เสาร์-อาทิตย์, หลังเลิกงาน, ตามนัด"
-                placeholderTextColor="#9ca3af"
-                style={styles.input}
-              />
-            </View>
+            {/* ✅ Availability Dropdown */}
+            <Dropdown
+              label="ว่างวัน/เวลาไหนบ้าง?"
+              icon="time"
+              value={availability}
+              options={AVAILABILITY_OPTIONS}
+              onSelect={setAvailability}
+              placeholder="เลือกช่วงเวลาที่ว่าง"
+            />
 
             {/* Experience */}
             <View style={styles.fieldGroup}>
@@ -327,7 +424,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#f9fafb",
   },
 
-  // Header
   header: {
     backgroundColor: Colors.PURPLE,
     paddingTop: 60,
@@ -381,13 +477,11 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
 
-  // Content
   content: {
     marginTop: -20,
     paddingHorizontal: 16,
   },
 
-  // Progress Card
   progressCard: {
     backgroundColor: "#fff",
     borderRadius: 16,
@@ -414,7 +508,6 @@ const styles = StyleSheet.create({
     color: "#374151",
   },
 
-  // Form Card
   card: {
     backgroundColor: "#fff",
     borderRadius: 20,
@@ -488,7 +581,78 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
 
-  // Info Box
+  // ✅ Dropdown Button
+  dropdownButton: {
+    backgroundColor: "#f9fafb",
+    borderWidth: 1.5,
+    borderColor: "#e5e7eb",
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  dropdownButtonText: {
+    fontSize: 15,
+    color: "#111827",
+    flex: 1,
+  },
+  dropdownPlaceholder: {
+    color: "#9ca3af",
+  },
+
+  // ✅ Modal
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "flex-end",
+  },
+  modalContent: {
+    backgroundColor: "#fff",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    paddingBottom: 40,
+    maxHeight: "70%",
+  },
+  modalHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingVertical: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f3f4f6",
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#111827",
+  },
+
+  // ✅ Option Items
+  optionItem: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: "#f3f4f6",
+  },
+  optionItemSelected: {
+    backgroundColor: "#f5f3ff",
+  },
+  optionText: {
+    fontSize: 16,
+    color: "#374151",
+    fontWeight: "600",
+  },
+  optionTextSelected: {
+    color: Colors.PURPLE,
+    fontWeight: "800",
+  },
+
   infoBox: {
     flexDirection: "row",
     backgroundColor: "#eff6ff",
@@ -507,7 +671,6 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
 
-  // Submit Button
   submitBtn: {
     backgroundColor: "#ef4444",
     paddingVertical: 16,

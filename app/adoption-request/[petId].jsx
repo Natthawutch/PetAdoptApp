@@ -1,22 +1,23 @@
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
+import { Picker } from "@react-native-picker/picker";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
 import {
-    ActivityIndicator,
-    Alert,
-    KeyboardAvoidingView,
-    Platform,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TextInput,
-    TouchableOpacity,
-    View,
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
 } from "react-native";
 import {
-    createClerkSupabaseClient,
-    supabase,
+  createClerkSupabaseClient,
+  supabase,
 } from "../../config/supabaseClient";
 import Colors from "../../constants/Colors";
 
@@ -85,6 +86,27 @@ function Input({
       placeholderTextColor="#9CA3AF"
       style={[styles.input, multiline && styles.textarea, style]}
     />
+  );
+}
+
+function Select({ value, onChange, items, placeholder }) {
+  return (
+    <View style={styles.selectWrap}>
+      <Picker
+        selectedValue={value}
+        onValueChange={onChange}
+        style={styles.picker}
+      >
+        <Picker.Item
+          label={placeholder || "เลือก..."}
+          value=""
+          color="#9CA3AF"
+        />
+        {items.map((it) => (
+          <Picker.Item key={it.value} label={it.label} value={it.value} />
+        ))}
+      </Picker>
+    </View>
   );
 }
 
@@ -157,7 +179,7 @@ export default function AdoptionRequestForm() {
   const validate = () => {
     if (!fullName.trim()) return "กรุณากรอกชื่อ-นามสกุล";
     if (!phone.trim()) return "กรุณากรอกเบอร์โทร";
-    if (!homeType.trim()) return "กรุณาระบุประเภทที่พักอาศัย";
+    if (!homeType) return "กรุณาระบุประเภทที่พักอาศัย";
     if (!reason.trim()) return "กรุณาระบุเหตุผลในการรับเลี้ยง";
     return null;
   };
@@ -202,9 +224,9 @@ export default function AdoptionRequestForm() {
       const payload = {
         fullName,
         phone,
-        homeType,
-        family,
-        hasPets,
+        homeType, // now stores value like: house/condo/etc
+        family, // now stores value like: alone/couple/etc
+        hasPets, // now stores value: yes/no
         experience,
         reason,
         readyCosts,
@@ -287,11 +309,6 @@ export default function AdoptionRequestForm() {
                 ) : (
                   <Pill icon="time" text="รอการตอบกลับจากเจ้าของ" tone="warn" />
                 )}
-                <Pill
-                  icon="shield-checkmark"
-                  text="ข้อมูลใช้เพื่อการคัดกรอง"
-                  tone="info"
-                />
               </View>
             </View>
 
@@ -345,24 +362,40 @@ export default function AdoptionRequestForm() {
             />
 
             <Required label="ประเภทที่พักอาศัย" />
-            <Input
+            <Select
               value={homeType}
-              onChangeText={setHomeType}
-              placeholder="บ้าน / คอนโด / ทาวน์โฮม"
+              onChange={setHomeType}
+              placeholder="เลือกประเภทที่พักอาศัย"
+              items={[
+                { label: "บ้านเดี่ยว", value: "house" },
+                { label: "ทาวน์โฮม/ทาวน์เฮาส์", value: "townhome" },
+                { label: "คอนโด", value: "condo" },
+                { label: "หอพัก/อพาร์ตเมนต์", value: "apartment" },
+              ]}
             />
 
             <Optional label="อยู่กับใคร" />
-            <Input
+            <Select
               value={family}
-              onChangeText={setFamily}
-              placeholder="อยู่คนเดียว / คู่ / ครอบครัว"
+              onChange={setFamily}
+              placeholder="เลือก"
+              items={[
+                { label: "อยู่คนเดียว", value: "alone" },
+                { label: "อยู่กับคู่", value: "couple" },
+                { label: "อยู่กับครอบครัว", value: "family" },
+                { label: "อยู่กับรูมเมท", value: "roommates" },
+              ]}
             />
 
             <Optional label="มีสัตว์เลี้ยงเดิมไหม" />
-            <Input
+            <Select
               value={hasPets}
-              onChangeText={setHasPets}
-              placeholder="ไม่มี / มี (ระบุชนิด)"
+              onChange={setHasPets}
+              placeholder="เลือก"
+              items={[
+                { label: "ไม่มี", value: "no" },
+                { label: "มี", value: "yes" },
+              ]}
             />
 
             <Optional label="ประสบการณ์การเลี้ยงสัตว์" />
@@ -378,13 +411,6 @@ export default function AdoptionRequestForm() {
               onChangeText={setReason}
               placeholder="เล่าให้เจ้าของฟังหน่อยว่าทำไมถึงอยากรับเลี้ยง"
               multiline
-            />
-
-            <Optional label="ความพร้อมค่าใช้จ่าย/เวลา" />
-            <Input
-              value={readyCosts}
-              onChangeText={setReadyCosts}
-              placeholder="เช่น พร้อมค่าอาหาร วัคซีน ดูแลเวลา ฯลฯ"
             />
 
             <Optional label="ข้อมูลเพิ่มเติม (ถ้ามี)" />
@@ -407,16 +433,16 @@ export default function AdoptionRequestForm() {
               {alreadySent
                 ? "ส่งคำขอแล้ว"
                 : isAdopted
-                ? "ถูกรับเลี้ยงแล้ว"
-                : "พร้อมส่งคำขอ"}
+                  ? "ถูกรับเลี้ยงแล้ว"
+                  : "พร้อมส่งคำขอ"}
             </Text>
             <Text style={styles.bottomSub}>
               {disableSubmit
                 ? alreadySent
                   ? "คุณส่งคำขอนี้ไปแล้ว"
                   : isAdopted
-                  ? "น้องถูกรับเลี้ยงไปแล้ว"
-                  : "กำลังส่งคำขอ..."
+                    ? "น้องถูกรับเลี้ยงไปแล้ว"
+                    : "กำลังส่งคำขอ..."
                 : "ตรวจสอบข้อมูลให้ครบก่อนกดยืนยัน"}
             </Text>
           </View>
@@ -462,7 +488,7 @@ function Pill({ icon, text, tone }) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F9FAFB" },
+  container: { flex: 1, backgroundColor: "#F9FAFB", paddingTop: 40 },
   page: { padding: 16, paddingBottom: 18 },
 
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
@@ -561,6 +587,19 @@ const styles = StyleSheet.create({
     color: "#111827",
   },
   textarea: { minHeight: 96, textAlignVertical: "top" },
+
+  // NEW: dropdown styles
+  selectWrap: {
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 14,
+    backgroundColor: "#F9FAFB",
+    overflow: "hidden",
+  },
+  picker: {
+    height: 48,
+    color: "#111827",
+  },
 
   bottomBar: {
     position: "absolute",

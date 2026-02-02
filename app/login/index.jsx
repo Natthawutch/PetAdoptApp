@@ -161,8 +161,8 @@ export default function SignInScreen() {
 
         {/* Title */}
         <Animated.View style={[styles.titleContainer, { opacity: fadeIn }]}>
-          <Text style={styles.title}>ยินดีต้อนรับกลับ</Text>
-          <Text style={styles.subtitle}>เข้าสู่ระบบเพื่อดูแลเพื่อนใหม่</Text>
+          <Text style={styles.title}>เข้าสู่ระบบ</Text>
+          <Text style={styles.subtitle}>ป้อนอีเมลและรหัสผ่านของคุณ</Text>
         </Animated.View>
 
         {/* Form */}
@@ -192,7 +192,7 @@ export default function SignInScreen() {
               />
               <TextInput
                 style={styles.input}
-                placeholder="คุณ@อีเมล.com"
+                placeholder="กรอกอีเมลของคุณ"
                 value={emailAddress}
                 onChangeText={setEmailAddress}
                 onFocus={() => setEmailFocused(true)}
@@ -282,7 +282,7 @@ export default function SignInScreen() {
           <Text style={styles.footerText}>ยังไม่มีบัญชี? </Text>
           <Link href="/register" asChild>
             <TouchableOpacity>
-              <Text style={styles.footerLink}>สมัครสมาชิกเลย</Text>
+              <Text style={styles.footerLink}>สมัครสมาชิก</Text>
             </TouchableOpacity>
           </Link>
         </Animated.View>
@@ -363,7 +363,7 @@ const styles = StyleSheet.create({
     letterSpacing: -0.5,
   },
   subtitle: {
-    fontSize: 15,
+    fontSize: 16,
     color: "#9A9A9A",
     fontWeight: "500",
   },

@@ -16,7 +16,7 @@ import {
 } from "react-native";
 import { createClerkSupabaseClient } from "../../config/supabaseClient";
 
-// ✅ ใส่อีเมลแอดมินของคุณ (ถ้าไม่ใส่ = ทุกคนเข้าได้)
+// ✅ ใส่อีเมลแอดมินของคุณ (ถ้าไม่ใส่ = ทุกคนเข้าได้)  ⚠️ production แนะนำอย่าปล่อยว่าง
 const ADMIN_EMAILS = [
   // "your_email@gmail.com",
 ];
@@ -107,11 +107,6 @@ export default function AdminUserReports() {
         reporter: usersMap.get(r.reporter_clerk_id) || null,
         reported: usersMap.get(r.reported_clerk_id) || null,
       }));
-
-      if (error) {
-        console.error("fetchReports error:", error);
-        throw error;
-      }
 
       console.log("✅ Fetched reports:", data?.length || 0);
       setReports(data || []);
@@ -209,6 +204,65 @@ export default function AdminUserReports() {
     } finally {
       setSaving(false);
     }
+  };
+
+  // ✅ ลบโพสต์ (pets) จากรายงานนี้
+  const deletePetPost = async () => {
+    if (!selected?.pet_id) {
+      Alert.alert("ลบไม่ได้", "รายงานนี้ไม่มี pet_id หรือโพสต์ถูกลบไปแล้ว");
+      return;
+    }
+
+    Alert.alert("ยืนยันลบโพสต์", "ลบแล้วกู้คืนไม่ได้ แน่ใจไหม?", [
+      { text: "ยกเลิก", style: "cancel" },
+      {
+        text: "ลบ",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            setSaving(true);
+            const supabase = await getSupabase();
+
+            // 1) ลบโพสต์ในตาราง pets
+            const { error: delError } = await supabase
+              .from("pets")
+              .delete()
+              .eq("id", selected.pet_id);
+
+            if (delError) throw delError;
+
+            // 2) อัปเดต report ให้ resolved + note
+            const note = [
+              (editingNote || "").trim(),
+              "[Action] deleted pet post",
+              `pet_id=${selected.pet_id}`,
+            ]
+              .filter(Boolean)
+              .join("\n");
+
+            const { error: repError } = await supabase
+              .from("user_reports")
+              .update({
+                status: "resolved",
+                admin_note: note || null,
+              })
+              .eq("id", selected.id);
+
+            if (repError) throw repError;
+
+            Alert.alert("สำเร็จ", "ลบโพสต์แล้ว และปิดเคสเรียบร้อย ✅");
+            setShowModal(false);
+            setSelected(null);
+            fetchReports();
+          } catch (e) {
+            console.error("deletePetPost error:", e);
+            Alert.alert("ลบไม่ได้", e?.message || "เกิดข้อผิดพลาด");
+          } finally {
+            setSaving(false);
+          }
+        },
+      },
+    ]);
   };
 
   const onRefresh = () => {
@@ -507,6 +561,20 @@ export default function AdminUserReports() {
                   disabled={saving}
                 >
                   <Text style={styles.cancelText}>ปิด</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.cancelBtn,
+                    { backgroundColor: "#FEE2E2" },
+                    saving && { opacity: 0.6 },
+                  ]}
+                  onPress={deletePetPost}
+                  disabled={saving}
+                >
+                  <Text style={[styles.cancelText, { color: "#991B1B" }]}>
+                    ลบโพสต์
+                  </Text>
                 </TouchableOpacity>
 
                 <TouchableOpacity

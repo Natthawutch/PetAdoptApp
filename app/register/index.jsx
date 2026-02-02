@@ -20,17 +20,24 @@ export default function SignUpScreen() {
   const { isLoaded, signUp, setActive } = useSignUp();
   const router = useRouter();
 
+  const [name, setName] = useState("");
   const [emailAddress, setEmailAddress] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
+
   const [code, setCode] = useState("");
   const [pendingVerification, setPendingVerification] = useState(false);
   const [loading, setLoading] = useState(false);
+
+  const [nameFocused, setNameFocused] = useState(false);
   const [emailFocused, setEmailFocused] = useState(false);
   const [passwordFocused, setPasswordFocused] = useState(false);
+  const [confirmPasswordFocused, setConfirmPasswordFocused] = useState(false);
   const [codeFocused, setCodeFocused] = useState(false);
 
-  // Animations
   const fadeIn = useRef(new Animated.Value(0)).current;
   const slideUp = useRef(new Animated.Value(40)).current;
   const logoScale = useRef(new Animated.Value(0.8)).current;
@@ -64,21 +71,37 @@ export default function SignUpScreen() {
   const onSignUpPress = async () => {
     if (!isLoaded) return;
 
-    if (!emailAddress || !password) {
-      Alert.alert("แจ้งเตือน", "กรุณากรอกอีเมลและรหัสผ่าน");
+    const cleanName = name.trim();
+
+    if (!cleanName || !emailAddress || !password || !confirmPassword) {
+      Alert.alert("แจ้งเตือน", "กรุณากรอกข้อมูลให้ครบ");
+      return;
+    }
+    if (password.length < 8) {
+      Alert.alert("รหัสผ่านไม่ปลอดภัย", "รหัสผ่านต้องอย่างน้อย 8 ตัวอักษร");
+      return;
+    }
+    if (password !== confirmPassword) {
+      Alert.alert("รหัสผ่านไม่ตรงกัน", "กรุณากรอกรหัสผ่านให้ตรงกัน");
       return;
     }
 
     setLoading(true);
     try {
-      await signUp.create({ emailAddress, password });
+      // ✅ เก็บชื่อไว้ใน unsafeMetadata ตั้งแต่สมัคร
+      await signUp.create({
+        emailAddress,
+        password,
+        unsafeMetadata: { name: cleanName },
+      });
+
       await signUp.prepareEmailAddressVerification({ strategy: "email_code" });
       setPendingVerification(true);
     } catch (err) {
       console.error("Sign up error:", err);
       Alert.alert(
         "สมัครไม่สำเร็จ",
-        err.errors?.[0]?.message || "กรุณาตรวจสอบข้อมูลอีกครั้ง",
+        err?.errors?.[0]?.message || "กรุณาตรวจสอบข้อมูลอีกครั้ง",
       );
     } finally {
       setLoading(false);
@@ -98,8 +121,10 @@ export default function SignUpScreen() {
       const signUpAttempt = await signUp.attemptEmailAddressVerification({
         code,
       });
+
       if (signUpAttempt.status === "complete") {
         await setActive({ session: signUpAttempt.createdSessionId });
+        // ✅ ไม่ต้อง user.update ตรงนี้ (ชื่ออยู่ใน unsafeMetadata แล้ว)
         router.replace("/");
       } else {
         console.log("Verification not complete:", signUpAttempt);
@@ -112,7 +137,6 @@ export default function SignUpScreen() {
     }
   };
 
-  /* ===================== VERIFICATION SCREEN ===================== */
   if (pendingVerification) {
     return (
       <KeyboardAvoidingView
@@ -124,11 +148,9 @@ export default function SignUpScreen() {
           showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          {/* Background Decorations */}
           <View style={styles.bgCircle1} />
           <View style={styles.bgCircle2} />
 
-          {/* Logo */}
           <Animated.View
             style={[
               styles.logoContainer,
@@ -140,7 +162,6 @@ export default function SignUpScreen() {
             </View>
           </Animated.View>
 
-          {/* Title */}
           <Animated.View style={[styles.titleContainer, { opacity: fadeIn }]}>
             <Text style={styles.title}>ยืนยันอีเมล</Text>
             <Text style={styles.subtitle}>
@@ -149,14 +170,12 @@ export default function SignUpScreen() {
             </Text>
           </Animated.View>
 
-          {/* Form */}
           <Animated.View
             style={[
               styles.formContainer,
               { opacity: fadeIn, transform: [{ translateY: slideUp }] },
             ]}
           >
-            {/* OTP Inputs */}
             <View style={styles.inputGroup}>
               <Text style={styles.inputLabel}>รหัสยืนยัน 6 หลัก</Text>
               <View
@@ -186,7 +205,6 @@ export default function SignUpScreen() {
               </View>
             </View>
 
-            {/* Verify Button */}
             <TouchableOpacity
               style={[styles.button, loading && styles.buttonDisabled]}
               onPress={onVerifyPress}
@@ -203,7 +221,6 @@ export default function SignUpScreen() {
               )}
             </TouchableOpacity>
 
-            {/* Helper */}
             <View style={styles.helperCard}>
               <View style={styles.helperIconWrapper}>
                 <Ionicons name="information-circle" size={20} color="#E8734A" />
@@ -214,10 +231,9 @@ export default function SignUpScreen() {
             </View>
           </Animated.View>
 
-          {/* Back Link */}
           <Animated.View style={[styles.footer, { opacity: fadeIn }]}>
             <TouchableOpacity onPress={() => setPendingVerification(false)}>
-              <Text style={styles.footerLink}>← กลับไปยังการสมัкรสมาชิก</Text>
+              <Text style={styles.footerLink}>← กลับไปยังการสมัครสมาชิก</Text>
             </TouchableOpacity>
           </Animated.View>
         </ScrollView>
@@ -225,7 +241,6 @@ export default function SignUpScreen() {
     );
   }
 
-  /* ===================== SIGNUP SCREEN ===================== */
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === "ios" ? "padding" : "height"}
@@ -236,11 +251,9 @@ export default function SignUpScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
-        {/* Background Decorations */}
         <View style={styles.bgCircle1} />
         <View style={styles.bgCircle2} />
 
-        {/* Logo */}
         <Animated.View
           style={[styles.logoContainer, { transform: [{ scale: logoScale }] }]}
         >
@@ -249,22 +262,47 @@ export default function SignUpScreen() {
           </View>
         </Animated.View>
 
-        {/* Title */}
         <Animated.View style={[styles.titleContainer, { opacity: fadeIn }]}>
-          <Text style={styles.title}>เข้าร่วมกับเรา</Text>
+          <Text style={styles.title}>สมัครสมาชิก</Text>
           <Text style={styles.subtitle}>
             สร้างบัญชีและเริ่มช่วยเหลือน้องหมาแมวจรจัดวันนี้
           </Text>
         </Animated.View>
 
-        {/* Form */}
         <Animated.View
           style={[
             styles.formContainer,
             { opacity: fadeIn, transform: [{ translateY: slideUp }] },
           ]}
         >
-          {/* Email Input */}
+          {/* Name */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>ชื่อผู้ใช้</Text>
+            <View
+              style={[
+                styles.inputWrapper,
+                nameFocused && styles.inputWrapperFocused,
+              ]}
+            >
+              <Ionicons
+                name="person-outline"
+                size={20}
+                color={nameFocused ? "#E8734A" : "#A0A0A0"}
+                style={styles.inputIcon}
+              />
+              <TextInput
+                style={styles.input}
+                placeholder="ชื่อของคุณ"
+                placeholderTextColor="#C0C0C0"
+                value={name}
+                onChangeText={setName}
+                onFocus={() => setNameFocused(true)}
+                onBlur={() => setNameFocused(false)}
+              />
+            </View>
+          </View>
+
+          {/* Email */}
           <View style={styles.inputGroup}>
             <Text style={styles.inputLabel}>อีเมล</Text>
             <View
@@ -281,7 +319,7 @@ export default function SignUpScreen() {
               />
               <TextInput
                 style={styles.input}
-                placeholder="คุณ@อีเมล.com"
+                placeholder="กรอกอีเมลของคุณ"
                 placeholderTextColor="#C0C0C0"
                 keyboardType="email-address"
                 autoCapitalize="none"
@@ -293,7 +331,7 @@ export default function SignUpScreen() {
             </View>
           </View>
 
-          {/* Password Input */}
+          {/* Password */}
           <View style={styles.inputGroup}>
             <Text style={styles.inputLabel}>รหัสผ่าน</Text>
             <View
@@ -334,7 +372,44 @@ export default function SignUpScreen() {
             </Text>
           </View>
 
-          {/* Sign Up Button */}
+          {/* Confirm Password */}
+          <View style={styles.inputGroup}>
+            <Text style={styles.inputLabel}>ยืนยันรหัสผ่าน</Text>
+            <View
+              style={[
+                styles.inputWrapper,
+                confirmPasswordFocused && styles.inputWrapperFocused,
+              ]}
+            >
+              <Ionicons
+                name="lock-closed-outline"
+                size={20}
+                color={confirmPasswordFocused ? "#E8734A" : "#A0A0A0"}
+                style={styles.inputIcon}
+              />
+              <TextInput
+                style={styles.input}
+                placeholder="พิมพ์รหัสผ่านอีกครั้ง"
+                placeholderTextColor="#C0C0C0"
+                secureTextEntry={!showConfirmPassword}
+                value={confirmPassword}
+                onChangeText={setConfirmPassword}
+                onFocus={() => setConfirmPasswordFocused(true)}
+                onBlur={() => setConfirmPasswordFocused(false)}
+              />
+              <TouchableOpacity
+                onPress={() => setShowConfirmPassword(!showConfirmPassword)}
+                style={styles.eyeButton}
+              >
+                <Ionicons
+                  name={showConfirmPassword ? "eye-outline" : "eye-off-outline"}
+                  size={20}
+                  color="#A0A0A0"
+                />
+              </TouchableOpacity>
+            </View>
+          </View>
+
           <TouchableOpacity
             style={[styles.button, loading && styles.buttonDisabled]}
             onPress={onSignUpPress}
@@ -346,15 +421,14 @@ export default function SignUpScreen() {
             ) : (
               <>
                 <Ionicons name="person-add" size={20} color="#fff" />
-                <Text style={styles.buttonText}>สมัครสมาชิกฟรี</Text>
+                <Text style={styles.buttonText}>สมัครสมาชิก</Text>
               </>
             )}
           </TouchableOpacity>
         </Animated.View>
 
-        {/* Footer */}
         <Animated.View style={[styles.footer, { opacity: fadeIn }]}>
-          <Text style={styles.footerText}>มีบัญชีอยู่แล้ว? </Text>
+          <Text style={styles.footerText}>คุณมีบัญชีอยู่แล้ว? </Text>
           <Link href="/login" asChild>
             <TouchableOpacity>
               <Text style={styles.footerLink}>เข้าสู่ระบบ</Text>
@@ -367,18 +441,13 @@ export default function SignUpScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: "#FFFAF7",
-  },
+  container: { flex: 1, backgroundColor: "#FFFAF7" },
   scrollContent: {
     flexGrow: 1,
     justifyContent: "center",
     padding: 28,
     position: "relative",
   },
-
-  // Background Decorations — same as SignIn
   bgCircle1: {
     position: "absolute",
     top: -80,
@@ -399,12 +468,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#FEF0E8",
     opacity: 0.5,
   },
-
-  // Logo — same as SignIn
-  logoContainer: {
-    alignItems: "center",
-    marginBottom: 8,
-  },
+  logoContainer: { alignItems: "center", marginBottom: 8 },
   logoCircle: {
     width: 96,
     height: 96,
@@ -419,17 +483,10 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.35,
         shadowRadius: 16,
       },
-      android: {
-        elevation: 8,
-      },
+      android: { elevation: 8 },
     }),
   },
-
-  // Title — same as SignIn
-  titleContainer: {
-    alignItems: "center",
-    marginBottom: 36,
-  },
+  titleContainer: { alignItems: "center", marginBottom: 36 },
   title: {
     fontSize: 30,
     fontWeight: "800",
@@ -444,18 +501,9 @@ const styles = StyleSheet.create({
     textAlign: "center",
     lineHeight: 22,
   },
-  subtitleHighlight: {
-    color: "#E8734A",
-    fontWeight: "700",
-  },
-
-  // Form — same as SignIn
-  formContainer: {
-    width: "100%",
-  },
-  inputGroup: {
-    marginBottom: 18,
-  },
+  subtitleHighlight: { color: "#E8734A", fontWeight: "700" },
+  formContainer: { width: "100%" },
+  inputGroup: { marginBottom: 18 },
   inputLabel: {
     fontSize: 14,
     fontWeight: "700",
@@ -479,43 +527,23 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.04,
         shadowRadius: 4,
       },
-      android: {
-        elevation: 1,
-      },
+      android: { elevation: 1 },
     }),
   },
   inputWrapperFocused: {
     borderColor: "#E8734A",
     backgroundColor: "#FFFAF7",
   },
-  inputIcon: {
-    marginRight: 12,
-    width: 20,
-  },
-  input: {
-    flex: 1,
-    fontSize: 15,
-    color: "#1A1A1A",
-    fontWeight: "500",
-  },
+  inputIcon: { marginRight: 12, width: 20 },
+  input: { flex: 1, fontSize: 15, color: "#1A1A1A", fontWeight: "500" },
   inputOTP: {
     letterSpacing: 6,
     fontSize: 22,
     fontWeight: "800",
     textAlign: "center",
   },
-  eyeButton: {
-    padding: 4,
-    marginLeft: 8,
-  },
-  passwordHint: {
-    fontSize: 13,
-    color: "#A0A0A0",
-    marginTop: 8,
-    marginLeft: 2,
-  },
-
-  // Button — same as SignIn
+  eyeButton: { padding: 4, marginLeft: 8 },
+  passwordHint: { fontSize: 13, color: "#A0A0A0", marginTop: 8, marginLeft: 2 },
   button: {
     flexDirection: "row",
     alignItems: "center",
@@ -532,22 +560,16 @@ const styles = StyleSheet.create({
         shadowOpacity: 0.35,
         shadowRadius: 10,
       },
-      android: {
-        elevation: 5,
-      },
+      android: { elevation: 5 },
     }),
   },
-  buttonDisabled: {
-    opacity: 0.6,
-  },
+  buttonDisabled: { opacity: 0.6 },
   buttonText: {
     color: "#fff",
     fontWeight: "700",
     fontSize: 17,
     letterSpacing: 0.3,
   },
-
-  // Helper Card (Verification)
   helperCard: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -559,9 +581,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#FDE8DF",
   },
-  helperIconWrapper: {
-    marginTop: 1,
-  },
+  helperIconWrapper: { marginTop: 1 },
   helperText: {
     flex: 1,
     fontSize: 14,
@@ -569,22 +589,12 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontWeight: "500",
   },
-
-  // Footer — same as SignIn
   footer: {
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
     marginTop: 36,
   },
-  footerText: {
-    fontSize: 15,
-    color: "#9A9A9A",
-    fontWeight: "500",
-  },
-  footerLink: {
-    fontSize: 15,
-    color: "#E8734A",
-    fontWeight: "700",
-  },
+  footerText: { fontSize: 15, color: "#9A9A9A", fontWeight: "500" },
+  footerLink: { fontSize: 15, color: "#E8734A", fontWeight: "700" },
 });

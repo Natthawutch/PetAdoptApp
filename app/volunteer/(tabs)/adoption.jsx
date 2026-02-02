@@ -1,7 +1,7 @@
 import { useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   FlatList,
   Image,
@@ -27,24 +27,17 @@ export default function VolunteerAdoptionList() {
 
   const [feedMode, setFeedMode] = useState("ALL");
 
-  // ✅ status = adoption_status (ของจริง)
+  // ✅ ตัด status ออก
   const [filters, setFilters] = useState({
     category: "ทั้งหมด",
     sex: "ทั้งหมด",
     breed: "ทั้งหมด",
-    status: "ทั้งหมด", // "ทั้งหมด" | "available" | "pending" | "adopted"
   });
 
   const [availableCategories, setAvailableCategories] = useState([]);
   const [availableBreeds, setAvailableBreeds] = useState([]);
 
-  // ✅ ให้ option เป็นตัวเล็กเพื่อ match DB
-  const availableStatuses = useMemo(
-    () => ["ทั้งหมด", "available", "pending", "adopted"],
-    [],
-  );
-
-  // ✅ ตัวหลัก: ซ่อน adopted (และกัน adopted=true เผื่อใช้ด้วย)
+  // ✅ ซ่อน adopted (และกัน adopted=true เผื่อใช้ด้วย)
   const isHiddenPet = (p) => {
     const st = (p?.adoption_status ?? "").toString().trim().toLowerCase();
     if (st === "adopted") return true;
@@ -109,13 +102,7 @@ export default function VolunteerAdoptionList() {
       result = result.filter((pet) => pet.breed === filters.breed);
     }
 
-    // ✅ ใช้ adoption_status (ไม่ใช่ post_status)
-    if (filters.status !== "ทั้งหมด") {
-      result = result.filter((pet) => {
-        const st = (pet?.adoption_status ?? "").toString().trim().toLowerCase();
-        return st === filters.status.toLowerCase();
-      });
-    }
+    // ❌ ตัด filter status ออกหมดแล้ว
 
     setFilteredPets(result);
   };
@@ -165,24 +152,11 @@ export default function VolunteerAdoptionList() {
     return { icon: "help-circle-outline", color: "#6B7280", label: "ไม่ระบุ" };
   };
 
-  // ✅ badge ใช้ adoption_status
-  const getStatusBadge = (status) => {
-    const st = (status ?? "").toString().trim().toLowerCase();
-    if (st === "available")
-      return { text: "พร้อมรับเลี้ยง", bg: "#dcfce7", fg: "#16a34a" };
-    if (st === "pending")
-      return { text: "มีคนสนใจ", bg: "#fef3c7", fg: "#b45309" };
-    if (st === "adopted")
-      return { text: "รับไปแล้ว", bg: "#e5e7eb", fg: "#374151" };
-    return { text: status || "ไม่ระบุ", bg: "#f3f4f6", fg: "#6b7280" };
-  };
-
   const hasActiveFilters = () => {
     return (
       filters.category !== "ทั้งหมด" ||
       filters.sex !== "ทั้งหมด" ||
-      filters.breed !== "ทั้งหมด" ||
-      filters.status !== "ทั้งหมด"
+      filters.breed !== "ทั้งหมด"
     );
   };
 
@@ -191,7 +165,6 @@ export default function VolunteerAdoptionList() {
     if (isHiddenPet(item)) return null;
 
     const gender = getGenderIcon(item.sex);
-    const st = getStatusBadge(item.adoption_status);
 
     return (
       <TouchableOpacity
@@ -221,12 +194,7 @@ export default function VolunteerAdoptionList() {
               </Text>
             </View>
 
-            <View style={[styles.statusBadge, { backgroundColor: st.bg }]}>
-              <View style={[styles.statusDot, { backgroundColor: st.fg }]} />
-              <Text style={[styles.statusBadgeText, { color: st.fg }]}>
-                {st.text}
-              </Text>
-            </View>
+            {/* ❌ เอา status badge ออกแล้ว */}
           </View>
         </View>
 
@@ -360,7 +328,6 @@ export default function VolunteerAdoptionList() {
                       category: "ทั้งหมด",
                       sex: "ทั้งหมด",
                       breed: "ทั้งหมด",
-                      status: "ทั้งหมด",
                     })
                   }
                 >
@@ -509,40 +476,7 @@ export default function VolunteerAdoptionList() {
                 </View>
               </View>
 
-              {/* ✅ สถานะ: ใช้ adoption_status (ตัวเล็ก) */}
-              <View style={styles.filterSection}>
-                <Text style={styles.groupLabel}>
-                  <Ionicons name="checkmark-circle" size={16} color="#374151" />{" "}
-                  สถานะ
-                </Text>
-                <View style={styles.chipRow}>
-                  {availableStatuses.map((st) => (
-                    <TouchableOpacity
-                      key={st}
-                      style={[
-                        styles.chip,
-                        filters.status === st && styles.chipActive,
-                      ]}
-                      onPress={() => setFilters({ ...filters, status: st })}
-                    >
-                      <Text
-                        style={[
-                          styles.chipText,
-                          filters.status === st && styles.chipTextActive,
-                        ]}
-                      >
-                        {st === "available"
-                          ? "พร้อมรับเลี้ยง"
-                          : st === "pending"
-                            ? "มีคนสนใจ"
-                            : st === "adopted"
-                              ? "รับไปแล้ว"
-                              : "ทั้งหมด"}
-                      </Text>
-                    </TouchableOpacity>
-                  ))}
-                </View>
-              </View>
+              {/* ❌ ตัด "สถานะ" ออกแล้ว */}
             </ScrollView>
 
             <View style={styles.modalFooter}>
@@ -553,7 +487,6 @@ export default function VolunteerAdoptionList() {
                     category: "ทั้งหมด",
                     sex: "ทั้งหมด",
                     breed: "ทั้งหมด",
-                    status: "ทั้งหมด",
                   })
                 }
               >
@@ -732,21 +665,10 @@ const styles = StyleSheet.create({
   },
   categoryBadgeText: { fontWeight: "800", color: "#8B5CF6", fontSize: 12 },
 
-  statusBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 12,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  statusDot: { width: 6, height: 6, borderRadius: 3 },
-  statusBadgeText: { fontWeight: "800", fontSize: 11 },
+  // ✅ statusBadge / statusDot / statusBadgeText จะลบออกก็ได้ (ไม่ใช้แล้ว)
+  // statusBadge: {...}
+  // statusDot: {...}
+  // statusBadgeText: {...}
 
   petInfo: { padding: 16 },
   petHeader: {

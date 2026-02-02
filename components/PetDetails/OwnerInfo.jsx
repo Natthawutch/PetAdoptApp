@@ -3,18 +3,22 @@ import { useState } from "react";
 import { Image, StyleSheet, Text, TouchableOpacity, View } from "react-native";
 import Colors from "../../constants/Colors";
 
-export default function OwnerInfo({ pet, onMessagePress }) {
+export default function OwnerInfo({ pet, owner, onMessagePress }) {
   const [imageError, setImageError] = useState(false);
-  const userImage = pet?.userImage || "https://via.placeholder.com/50";
-  const username = pet?.username || "Unknown";
 
-  const handleImageError = () => {
-    setImageError(true);
-  };
+  // ✅ ใช้ข้อมูลจาก owner ก่อน (มาจากตาราง users) ถ้าไม่มีค่อย fallback ไปที่ pet
+  const userImage =
+    owner?.avatar_url || pet?.userImage || "https://via.placeholder.com/50";
+
+  const username = owner?.full_name || pet?.username || "Unknown";
+
+  const handleImageError = () => setImageError(true);
 
   const getInitials = (name) => {
+    if (!name) return "U";
     return name
       .split(" ")
+      .filter(Boolean)
       .map((word) => word.charAt(0))
       .join("")
       .toUpperCase()
@@ -38,20 +42,13 @@ export default function OwnerInfo({ pet, onMessagePress }) {
           )}
           <View style={styles.onlineIndicator} />
         </View>
+
         <View style={styles.userDetails}>
           <Text style={styles.name} numberOfLines={1}>
             {username}
           </Text>
-          <View style={styles.labelContainer}>
-            <View style={styles.verifiedBadge}>
-              <Ionicons
-                name="checkmark-circle"
-                size={12}
-                color={Colors.GREEN || "#10B981"}
-              />
-            </View>
-            <Text style={styles.label}>Pet Owner</Text>
-          </View>
+
+          {/* ✅ เอา Pet Owner และ Gmail/Phone ออกแล้ว */}
         </View>
       </View>
 
@@ -79,10 +76,7 @@ const styles = StyleSheet.create({
     backgroundColor: "white",
     justifyContent: "space-between",
     shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 8,
     elevation: 4,
@@ -133,19 +127,7 @@ const styles = StyleSheet.create({
     fontFamily: "outfit-bold",
     fontSize: 18,
     color: "#1F2937",
-    marginBottom: 4,
-  },
-  labelContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-  },
-  verifiedBadge: {
-    marginRight: 6,
-  },
-  label: {
-    fontFamily: "outfit-medium",
-    fontSize: 14,
-    color: Colors.GRAY || "#6B7280",
+    marginBottom: 0, // ปรับให้ชิดขึ้น เพราะไม่มีบรรทัดรองแล้ว
   },
   messageButton: {
     flexDirection: "row",
@@ -155,10 +137,7 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 25,
     shadowColor: Colors.PURPLE || "#8B5CF6",
-    shadowOffset: {
-      width: 0,
-      height: 4,
-    },
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 8,
     elevation: 6,

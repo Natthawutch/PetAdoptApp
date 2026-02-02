@@ -349,21 +349,6 @@ export default function UsersAdmin() {
     <View style={styles.screen}>
       <View style={styles.header}>
         <Text style={styles.title}>👥 จัดการผู้ใช้</Text>
-
-        <View style={styles.summaryRow}>
-          <View style={styles.summaryPill}>
-            <Text style={styles.summaryText}>ทั้งหมด</Text>
-            <Text style={styles.summaryNum}>{counts.total}</Text>
-          </View>
-          <View style={styles.summaryPill}>
-            <Text style={styles.summaryText}>ยังไม่ยืนยัน</Text>
-            <Text style={styles.summaryNum}>{counts.unverified}</Text>
-          </View>
-          <View style={styles.summaryPill}>
-            <Text style={styles.summaryText}>อาสา</Text>
-            <Text style={styles.summaryNum}>{counts.volunteers}</Text>
-          </View>
-        </View>
       </View>
 
       <FlatList

@@ -41,7 +41,6 @@ export default function Home() {
   });
 
   const [availableCategories, setAvailableCategories] = useState([]);
-  const [availableBreeds, setAvailableBreeds] = useState([]);
 
   // =========================
   // ✅ REPORT (user_reports)
@@ -94,20 +93,22 @@ export default function Home() {
 
       if (error) throw error;
 
-      const petsData = (data || []).filter(isVisiblePet);
+      const myClerkId = (user?.id ?? "").toString().trim();
+
+      // ✅ กรองเฉพาะที่ควรเห็น + ไม่ใช่โพสต์ของตัวเอง
+      const petsData = (data || []).filter(isVisiblePet).filter((p) => {
+        const ownerId = (p?.user_id ?? "").toString().trim();
+        if (!myClerkId) return true; // ไม่ได้ล็อกอิน -> ไม่ตัด
+        return ownerId !== myClerkId;
+      });
+
       setPets(petsData);
 
       const categories = [
         "ทั้งหมด",
         ...new Set(petsData.map((p) => p.category).filter(Boolean)),
       ];
-      const breeds = [
-        "ทั้งหมด",
-        ...new Set(petsData.map((p) => p.breed).filter(Boolean)),
-      ];
-
       setAvailableCategories(categories);
-      setAvailableBreeds(breeds);
     } catch (error) {
       console.error("Error fetching pets:", error);
     } finally {
@@ -115,6 +116,16 @@ export default function Home() {
       setRefreshing(false);
     }
   };
+
+  // ✅ availableBreeds คำนวณตาม "ประเภท" ที่เลือกอยู่เสมอ
+  const availableBreeds = useMemo(() => {
+    const base =
+      filters.category === "ทั้งหมด"
+        ? pets
+        : pets.filter((p) => p.category === filters.category);
+
+    return ["ทั้งหมด", ...new Set(base.map((p) => p.breed).filter(Boolean))];
+  }, [pets, filters.category]);
 
   const applyFilters = () => {
     let result = pets.filter(isVisiblePet);
@@ -158,10 +169,27 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ✅ เพิ่ม: เมื่อ user.id พร้อม -> fetch ใหม่เพื่อซ่อนโพสต์ตัวเองให้ชัวร์
+  useEffect(() => {
+    if (user?.id) fetchPets();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id]);
+
   useEffect(() => {
     applyFilters();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters, pets]);
+
+  // ✅ ถ้าเปลี่ยนประเภทแล้ว breed เดิมไม่อยู่ใน list ใหม่ -> reset เป็น "ทั้งหมด"
+  useEffect(() => {
+    if (
+      filters.breed !== "ทั้งหมด" &&
+      !availableBreeds.includes(filters.breed)
+    ) {
+      setFilters((prev) => ({ ...prev, breed: "ทั้งหมด" }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filters.category, pets]);
 
   const handleRefresh = () => {
     setRefreshing(true);
@@ -186,7 +214,6 @@ export default function Home() {
   // =========================
   const openReport = async (pet) => {
     try {
-      // ✅ pets.user_id = clerk id (text) -> trim เผื่อมี space
       const reportedClerkId = (pet?.user_id ?? "").toString().trim();
 
       if (!user?.id) {
@@ -199,7 +226,6 @@ export default function Home() {
         return;
       }
 
-      // กันข้อมูล owner ผิดรูปแบบ
       if (!reportedClerkId.startsWith("user_")) {
         Alert.alert(
           "รายงานไม่ได้",
@@ -213,13 +239,11 @@ export default function Home() {
         return;
       }
 
-      // pets.id เป็น uuid string
       if (!pet?.id || typeof pet.id !== "string") {
         Alert.alert("รายงานไม่ได้", "ไม่พบ Pet ID ของโพสต์นี้");
         return;
       }
 
-      // ✅ สำคัญ: ดึงชื่อด้วย authed client (กันโดน RLS แล้วได้ [])
       const authed = await getAuthedSupabase();
 
       const { data: users, error: usersErr } = await authed
@@ -228,7 +252,6 @@ export default function Home() {
         .in("clerk_id", [user.id, reportedClerkId]);
 
       if (usersErr) console.log("fetch users error:", usersErr);
-      // console.log("users found:", users); // เปิดไว้ debug ได้
 
       const usersMap = new Map((users || []).map((u) => [u.clerk_id, u]));
       const reporter = usersMap.get(user.id);
@@ -295,7 +318,6 @@ export default function Home() {
     try {
       setSubmittingReport(true);
 
-      // ✅ ต้องใช้ authed client ไม่งั้น auth.jwt() เป็น null แล้ว RLS จะกัน
       const authed = await getAuthedSupabase();
 
       const reporterName = reportTarget?.preview?.reporter_full_name
@@ -322,8 +344,6 @@ export default function Home() {
         admin_note: null,
       };
 
-      console.log("SEND report payload:", payload);
-
       const { data, error } = await authed
         .from("user_reports")
         .insert(payload)
@@ -331,8 +351,6 @@ export default function Home() {
         .single();
 
       if (error) throw error;
-
-      console.log("INSERT OK:", data);
 
       Alert.alert(
         "ส่งรายงานสำเร็จ",
@@ -380,14 +398,13 @@ export default function Home() {
             </Text>
           </View>
 
-          {/* ✅ ปุ่มรายงานบนรูป */}
           <TouchableOpacity
             style={styles.reportFloatingBtn}
             onPress={() => openReport(item)}
             activeOpacity={0.85}
           >
             <Ionicons name="flag-outline" size={16} color="#EF4444" />
-            <Text style={styles.reportFloatingText}>รายงาน</Text>
+            <Text style={styles.reportFloatingText}>รายงานโพสต์</Text>
           </TouchableOpacity>
         </View>
 
@@ -458,9 +475,7 @@ export default function Home() {
           !loadingPets && (
             <View style={styles.emptyBox}>
               <Ionicons name="paw-outline" size={60} color="#DDD" />
-              <Text style={styles.emptyText}>
-                ตอนนี้ยังไม่มีน้องที่ "พร้อมรับเลี้ยง"
-              </Text>
+              <Text style={styles.emptyText}>ตอนนี้ยังไม่มีรายการให้แสดง</Text>
             </View>
           )
         }
@@ -488,7 +503,13 @@ export default function Home() {
                       styles.chip,
                       filters.category === cat && styles.chipActive,
                     ]}
-                    onPress={() => setFilters({ ...filters, category: cat })}
+                    onPress={() =>
+                      setFilters((prev) => ({
+                        ...prev,
+                        category: cat,
+                        breed: "ทั้งหมด", // ✅ เปลี่ยนประเภทแล้ว reset breed
+                      }))
+                    }
                   >
                     <Text
                       style={[
@@ -511,7 +532,7 @@ export default function Home() {
                       styles.chip,
                       filters.sex === sex && styles.chipActive,
                     ]}
-                    onPress={() => setFilters({ ...filters, sex })}
+                    onPress={() => setFilters((prev) => ({ ...prev, sex }))}
                   >
                     <Text
                       style={[
@@ -534,7 +555,9 @@ export default function Home() {
                       styles.chip,
                       filters.breed === brd && styles.chipActive,
                     ]}
-                    onPress={() => setFilters({ ...filters, breed: brd })}
+                    onPress={() =>
+                      setFilters((prev) => ({ ...prev, breed: brd }))
+                    }
                   >
                     <Text
                       style={[
@@ -759,7 +782,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#F1F5F9",
     position: "relative",
   },
-  petImage: { width: "100%", height: "100%", resizeMode: "contain" },
+  petImage: { width: "100%", height: "100%", resizeMode: "cover" },
 
   categoryBadge: {
     position: "absolute",

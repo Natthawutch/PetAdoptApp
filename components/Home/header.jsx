@@ -1,8 +1,8 @@
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Location from "expo-location";
-import { useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useFocusEffect, useRouter } from "expo-router";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -29,39 +29,55 @@ export default function Header() {
 
   const avatar = useMemo(
     () => clerkUser?.imageUrl || "https://www.gravatar.com/avatar/?d=mp",
-    [clerkUser],
+    [clerkUser?.imageUrl],
   );
 
-  // ✅ ดึงชื่อจากตาราง users ด้วย clerk_id
-  const loadProfileName = async () => {
+  // ✅ ดึงชื่อจากตาราง users ด้วย clerk_id (มี retry กัน row ยังไม่ทันถูกสร้าง)
+  const loadProfileName = useCallback(async () => {
     try {
       if (!clerkUser?.id) return;
 
       const token = await getToken({ template: "supabase" });
       const supabase = createClerkSupabaseClient(token);
 
-      const { data, error } = await supabase
-        .from("users")
-        .select("full_name")
-        .eq("clerk_id", clerkUser.id)
-        .maybeSingle();
+      // retry 3 รอบ เผื่อ AuthWrapper upsert ยังไม่เสร็จ
+      for (let i = 0; i < 3; i++) {
+        const { data, error } = await supabase
+          .from("users")
+          .select("full_name")
+          .eq("clerk_id", clerkUser.id)
+          .maybeSingle();
 
-      if (error) throw error;
+        if (error) throw error;
 
-      setDbFullName(data?.full_name ?? null);
+        if (data?.full_name) {
+          setDbFullName(data.full_name);
+          return;
+        }
+
+        await new Promise((r) => setTimeout(r, 350));
+      }
+
+      setDbFullName(null);
     } catch (e) {
       console.error("Header loadProfileName error:", e);
       setDbFullName(null);
     }
-  };
+  }, [clerkUser?.id, getToken]);
 
+  // ✅ set loading เมื่อ Clerk โหลดเสร็จ
   useEffect(() => {
     if (!isLoaded) return;
     setLoading(false);
-
-    // ✅ loaded แล้วค่อยดึงชื่อจาก DB
-    loadProfileName();
   }, [isLoaded]);
+
+  // ✅ สำคัญ: refetch ทุกครั้งที่เข้า/กลับมาหน้านี้ + เมื่อ user.id พร้อม
+  useFocusEffect(
+    useCallback(() => {
+      if (!isLoaded || !clerkUser?.id) return;
+      loadProfileName();
+    }, [isLoaded, clerkUser?.id, loadProfileName]),
+  );
 
   // (เหมือนเดิม) location
   useEffect(() => {
@@ -97,8 +113,12 @@ export default function Header() {
     );
   }
 
-  // ✅ ให้ DB เป็นตัวจริง, ถ้าไม่มีค่อย fallback ไป Clerk
-  const fullName = dbFullName || clerkUser?.fullName || "ผู้ใช้งาน";
+  // ✅ ให้ DB เป็นตัวจริง, ถ้า DB ยังไม่มา ให้ใช้ unsafeMetadata.name ก่อน
+  const fullName =
+    dbFullName ||
+    clerkUser?.unsafeMetadata?.name ||
+    clerkUser?.fullName ||
+    "ผู้ใช้งาน";
 
   return (
     <View style={styles.container}>

@@ -47,7 +47,7 @@ const buildStats = (s = {}) => [
   },
   {
     key: "pendingApprovals",
-    title: "ยังไม่ได้ยืนยันตัวตน",
+    title: "ผู้ใช้ที่ยังไม่ได้ยืนยันตัวตน",
     number: s.pendingApprovals ?? 0,
     icon: "time-outline",
     color: "#8b5cf6",
@@ -191,7 +191,7 @@ export default function Dashboard() {
     const s = statsData || {};
     return [
       {
-        label: "ยังไม่ได้ยืนยันตัวตน",
+        label: "ผู้ใช้ที่ยังไม่ได้ยืนยันตัวตน",
         value: s.pendingApprovals ?? 0,
         icon: "time-outline",
         color: "#8b5cf6",
@@ -304,10 +304,7 @@ export default function Dashboard() {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <View>
-              <Text style={styles.sectionTitle}>ตัวชี้วัดหลัก</Text>
-              <Text style={styles.sectionSub}>
-                แตะเพื่อดูรายละเอียด (ภายหลังค่อยต่อ)
-              </Text>
+              <Text style={styles.sectionTitle}>สถิติทั่วไป</Text>
             </View>
           </View>
 

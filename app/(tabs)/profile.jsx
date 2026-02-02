@@ -107,7 +107,7 @@ export default function Profile() {
   useFocusEffect(
     useCallback(() => {
       loadProfile();
-    }, [user])
+    }, [user]),
   );
 
   useEffect(() => {
@@ -130,7 +130,7 @@ export default function Profile() {
             table: "pets",
             filter: `user_id=eq.${user.id}`,
           },
-          () => loadProfile()
+          () => loadProfile(),
         )
         .subscribe();
 
@@ -144,7 +144,7 @@ export default function Profile() {
             table: "adoption_requests",
             filter: `requester_id=eq.${user.id}`,
           },
-          () => loadProfile()
+          () => loadProfile(),
         )
         .subscribe();
     };
@@ -232,6 +232,11 @@ export default function Profile() {
   const isAdmin = profile?.role === "admin";
   const isPending = myVolunteerRequest?.status === "pending";
 
+  // ✅ Verification status (เพิ่มตามที่ขอ)
+  const verificationStatus = profile?.verification_status || "unverified";
+  const isVerified = verificationStatus === "verified";
+  const isVerifyPending = verificationStatus === "pending";
+
   return (
     <ScrollView
       style={styles.container}
@@ -286,10 +291,10 @@ export default function Profile() {
                 isAdmin
                   ? "shield"
                   : isVolunteer
-                  ? "shield-checkmark"
-                  : isPending
-                  ? "time"
-                  : "person"
+                    ? "shield-checkmark"
+                    : isPending
+                      ? "time"
+                      : "person"
               }
               size={14}
               color="#fff"
@@ -300,6 +305,66 @@ export default function Profile() {
               {!isAdmin && !isVolunteer && isPending && "รออนุมัติอาสา"}
               {!isAdmin && !isVolunteer && !isPending && "ผู้ใช้งานทั่วไป"}
             </Text>
+          </View>
+
+          {/* ✅ Verification Card */}
+          <View
+            style={[
+              styles.verifyCard,
+              isVerified && styles.verifyCardVerified,
+              isVerifyPending && styles.verifyCardPending,
+            ]}
+          >
+            <View style={styles.verifyLeft}>
+              <Ionicons
+                name={
+                  isVerified
+                    ? "checkmark-circle"
+                    : isVerifyPending
+                      ? "time"
+                      : "alert-circle"
+                }
+                size={18}
+                color={
+                  isVerified
+                    ? "#22c55e"
+                    : isVerifyPending
+                      ? "#f59e0b"
+                      : "#ef4444"
+                }
+              />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.verifyTitle}>
+                  {isVerified
+                    ? "ยืนยันตัวตนแล้ว"
+                    : isVerifyPending
+                      ? "กำลังตรวจสอบตัวตน"
+                      : "ยังไม่ยืนยันตัวตน"}
+                </Text>
+                <Text style={styles.verifySubtitle}>
+                  {isVerified
+                    ? "คุณสามารถส่งคำขอรับเลี้ยงได้ตามปกติ"
+                    : isVerifyPending
+                      ? "กรุณารอสักครู่ ผู้ดูแลกำลังตรวจสอบ"
+                      : "เพื่อความปลอดภัย กรุณายืนยันตัวตนก่อนส่งคำขอรับเลี้ยง"}
+                </Text>
+              </View>
+            </View>
+
+            {!isVerified && (
+              <TouchableOpacity
+                style={[
+                  styles.verifyBtn,
+                  isVerifyPending && styles.verifyBtnDisabled,
+                ]}
+                onPress={() => router.push("/verify")}
+                disabled={isVerifyPending}
+              >
+                <Text style={styles.verifyBtnText}>
+                  {isVerifyPending ? "รอตรวจสอบ" : "ยืนยันตัวตน"}
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           {profile?.bio && (
@@ -398,32 +463,6 @@ export default function Profile() {
                       style={styles.petImage}
                     />
 
-                    <View style={styles.petOverlay}>
-                      <View
-                        style={[
-                          styles.statusBadge,
-                          item.adoption_status === "adopted"
-                            ? styles.statusAdopted
-                            : styles.statusAvailable,
-                        ]}
-                      >
-                        <Ionicons
-                          name={
-                            item.adoption_status === "adopted"
-                              ? "checkmark-circle"
-                              : "heart"
-                          }
-                          size={12}
-                          color="#fff"
-                        />
-                        <Text style={styles.statusText}>
-                          {item.adoption_status === "adopted"
-                            ? "รับเลี้ยงแล้ว"
-                            : "พร้อมรับเลี้ยง"}
-                        </Text>
-                      </View>
-                    </View>
-
                     <View style={styles.petInfo}>
                       <Text style={styles.petName} numberOfLines={1}>
                         {item.name}
@@ -431,7 +470,7 @@ export default function Profile() {
                       <View style={styles.petMeta}>
                         <Ionicons name="location" size={12} color="#9ca3af" />
                         <Text style={styles.petMetaText} numberOfLines={1}>
-                          {item.location || "ไม่ระบุตำแหน่ง"}
+                          {item.address || "ไม่ระบุตำแหน่ง"}
                         </Text>
                       </View>
                     </View>
@@ -612,6 +651,61 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
 
+  // ✅ Verification
+  verifyCard: {
+    marginTop: 14,
+    width: "100%",
+    backgroundColor: "rgba(255,255,255,0.18)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.25)",
+    borderRadius: 18,
+    padding: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  verifyCardVerified: {
+    backgroundColor: "rgba(34,197,94,0.15)",
+    borderColor: "rgba(34,197,94,0.25)",
+  },
+  verifyCardPending: {
+    backgroundColor: "rgba(245,158,11,0.15)",
+    borderColor: "rgba(245,158,11,0.25)",
+  },
+  verifyLeft: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 10,
+    flex: 1,
+  },
+  verifyTitle: {
+    color: "#fff",
+    fontWeight: "800",
+    fontSize: 14,
+    marginBottom: 2,
+  },
+  verifySubtitle: {
+    color: "rgba(255,255,255,0.85)",
+    fontSize: 12,
+    lineHeight: 16,
+    fontWeight: "600",
+  },
+  verifyBtn: {
+    backgroundColor: "#fff",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 14,
+  },
+  verifyBtnDisabled: {
+    opacity: 0.7,
+  },
+  verifyBtnText: {
+    color: Colors.PURPLE,
+    fontWeight: "900",
+    fontSize: 12,
+  },
+
   bioContainer: {
     marginTop: 12,
     backgroundColor: "rgba(255,255,255,0.15)",
@@ -772,30 +866,6 @@ const styles = StyleSheet.create({
   petImage: {
     width: 120,
     height: 120,
-  },
-  petOverlay: {
-    position: "absolute",
-    top: 8,
-    left: 8,
-  },
-  statusBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 12,
-  },
-  statusAvailable: {
-    backgroundColor: "rgba(59, 130, 246, 0.95)",
-  },
-  statusAdopted: {
-    backgroundColor: "rgba(34, 197, 94, 0.95)",
-  },
-  statusText: {
-    color: "#fff",
-    fontSize: 11,
-    fontWeight: "700",
   },
 
   petInfo: {

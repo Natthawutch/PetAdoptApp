@@ -67,6 +67,15 @@ export default function TabLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="track-adoption"
+        options={{
+          title: "ติดตามสถานะ",
+          tabBarIcon: ({ color }) => (
+            <Ionicons name="document-text" size={25} color={color} />
+          ),
+        }}
+      />
 
       <Tabs.Screen
         name="profile"

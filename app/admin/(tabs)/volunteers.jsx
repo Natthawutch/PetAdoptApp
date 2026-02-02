@@ -4,9 +4,10 @@ import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Animated,
   FlatList,
   Modal,
-  RefreshControl,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
@@ -15,15 +16,176 @@ import {
 } from "react-native";
 import { createClerkSupabaseClient } from "../../../config/supabaseClient";
 
+// ✨ Animated Card Component
+const VolunteerCard = ({ item, onPress, onReject, onApprove, busy }) => {
+  const slideAnim = useRef(new Animated.Value(0)).current;
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+
+  useEffect(() => {
+    Animated.spring(slideAnim, {
+      toValue: 1,
+      useNativeDriver: true,
+      tension: 50,
+      friction: 7,
+    }).start();
+  }, []);
+
+  const handlePressIn = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 0.97,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const handlePressOut = () => {
+    Animated.spring(scaleAnim, {
+      toValue: 1,
+      useNativeDriver: true,
+      friction: 3,
+    }).start();
+  };
+
+  return (
+    <Animated.View
+      style={{
+        transform: [
+          {
+            translateY: slideAnim.interpolate({
+              inputRange: [0, 1],
+              outputRange: [30, 0],
+            }),
+          },
+          { scale: scaleAnim },
+        ],
+        opacity: slideAnim,
+      }}
+    >
+      <TouchableOpacity
+        style={styles.card}
+        onPress={onPress}
+        onPressIn={handlePressIn}
+        onPressOut={handlePressOut}
+        activeOpacity={0.95}
+      >
+        {/* Header */}
+        <View style={styles.cardHeader}>
+          <View style={styles.avatarCircle}>
+            <Text style={styles.avatarText}>
+              {(item.user?.full_name || "?").charAt(0).toUpperCase()}
+            </Text>
+          </View>
+          <View style={styles.cardHeaderInfo}>
+            <Text style={styles.name} numberOfLines={1}>
+              {item.user?.full_name || "ไม่ทราบชื่อ"}
+            </Text>
+            <Text style={styles.email} numberOfLines={1}>
+              {item.user?.email || item.requester_id}
+            </Text>
+          </View>
+          <View style={styles.statusBadge}>
+            <View style={styles.badgeDot} />
+            <Text style={styles.statusText}>รอ</Text>
+          </View>
+        </View>
+
+        {/* Info Section */}
+        <View style={styles.cardBody}>
+          <View style={styles.infoRow}>
+            <Ionicons name="calendar-outline" size={14} color="#8E8E93" />
+            <Text style={styles.infoText}>
+              {new Date(item.created_at).toLocaleDateString("th-TH", {
+                day: "numeric",
+                month: "short",
+                year: "numeric",
+              })}
+            </Text>
+          </View>
+
+          {!!item.phone && (
+            <View style={styles.infoRow}>
+              <Ionicons name="call-outline" size={14} color="#8E8E93" />
+              <Text style={styles.infoText}>{item.phone}</Text>
+            </View>
+          )}
+
+          {!!item.area && (
+            <View style={styles.infoRow}>
+              <Ionicons name="location-outline" size={14} color="#8E8E93" />
+              <Text style={styles.infoText}>{item.area}</Text>
+            </View>
+          )}
+
+          {!!item.reason && (
+            <View style={styles.reasonContainer}>
+              <Ionicons name="chatbubble-outline" size={14} color="#8B5CF6" />
+              <Text style={styles.reasonText} numberOfLines={2}>
+                {item.reason}
+              </Text>
+            </View>
+          )}
+        </View>
+
+        {/* Action Buttons */}
+        <View style={styles.cardFooter}>
+          <TouchableOpacity
+            style={[
+              styles.actionBtn,
+              styles.rejectBtn,
+              busy && styles.btnDisabled,
+            ]}
+            onPress={(e) => {
+              e.stopPropagation();
+              onReject();
+            }}
+            disabled={busy}
+            activeOpacity={0.8}
+          >
+            {busy ? (
+              <ActivityIndicator color="#FF3B30" size="small" />
+            ) : (
+              <>
+                <Ionicons name="close-circle" size={18} color="#FF3B30" />
+                <Text style={styles.rejectBtnText}>ปฏิเสธ</Text>
+              </>
+            )}
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.actionBtn,
+              styles.approveBtn,
+              busy && styles.btnDisabled,
+            ]}
+            onPress={(e) => {
+              e.stopPropagation();
+              onApprove();
+            }}
+            disabled={busy}
+            activeOpacity={0.8}
+          >
+            {busy ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <>
+                <Ionicons name="checkmark-circle" size={18} color="#fff" />
+                <Text style={styles.approveBtnText}>อนุมัติ</Text>
+              </>
+            )}
+          </TouchableOpacity>
+        </View>
+      </TouchableOpacity>
+    </Animated.View>
+  );
+};
+
 export default function AdminVolunteers() {
   const { getToken } = useAuth();
 
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [list, setList] = useState([]);
   const [selectedRequest, setSelectedRequest] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
-  const [actionLoading, setActionLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState({});
 
   const channelRef = useRef(null);
   const refreshTimerRef = useRef(null);
@@ -32,14 +194,12 @@ export default function AdminVolunteers() {
 
   const getSupabase = async () => {
     try {
-      // ✅ ขอ token ใหม่ทุกครั้ง (skipCache: true)
       const token = await getToken({ template: "supabase", skipCache: true });
 
       if (!token) {
         throw new Error("ไม่สามารถดึง token ได้");
       }
 
-      // ✅ สร้าง client ใหม่ทุกครั้ง
       const supabase = createClerkSupabaseClient(token);
 
       return supabase;
@@ -52,13 +212,9 @@ export default function AdminVolunteers() {
 
   /* ---------------- LOAD DATA ---------------- */
 
-  const load = async (showRefreshing = false) => {
+  const load = async () => {
     try {
-      if (showRefreshing) {
-        setRefreshing(true);
-      } else {
-        setLoading(true);
-      }
+      setLoading(true);
 
       const supabase = await getSupabase();
 
@@ -109,7 +265,6 @@ export default function AdminVolunteers() {
       Alert.alert("เกิดข้อผิดพลาด", "ไม่สามารถโหลดข้อมูลได้");
     } finally {
       setLoading(false);
-      setRefreshing(false);
     }
   };
 
@@ -119,7 +274,6 @@ export default function AdminVolunteers() {
     try {
       const supabase = await getSupabase();
 
-      // ✅ ยกเลิก channel เก่าก่อน
       if (channelRef.current) {
         try {
           await supabase.removeChannel(channelRef.current);
@@ -140,7 +294,7 @@ export default function AdminVolunteers() {
           },
         )
         .subscribe((status, err) => {
-          console.log("📡 Realtime status Voluntrre:", status);
+          console.log("📡 Realtime status Volunteer:", status);
           if (err) console.log("❌ Realtime err:", err);
         });
     } catch (error) {
@@ -165,7 +319,6 @@ export default function AdminVolunteers() {
   const startAutoRefresh = () => {
     if (refreshTimerRef.current) return;
 
-    // ✅ ลด interval เหลือ 3 นาที (token Clerk มักหมดอายุ 5 นาที)
     refreshTimerRef.current = setInterval(
       async () => {
         try {
@@ -177,7 +330,7 @@ export default function AdminVolunteers() {
         }
       },
       3 * 60 * 1000,
-    ); // 3 นาที
+    );
   };
 
   const stopAutoRefresh = () => {
@@ -205,7 +358,7 @@ export default function AdminVolunteers() {
   /* ---------------- ACTIONS ---------------- */
 
   const approve = async (request) => {
-    setActionLoading(true);
+    setActionLoading((p) => ({ ...p, [request.id]: true }));
     try {
       const supabase = await getSupabase();
 
@@ -230,18 +383,18 @@ export default function AdminVolunteers() {
       }
 
       setModalVisible(false);
-      Alert.alert("สำเร็จ", "อนุมัติอาสาสมัครเรียบร้อยแล้ว");
-      await load(); // ✅ รีโหลดข้อมูล
+      Alert.alert("สำเร็จ", "อนุมัติอาสาสมัครเรียบร้อยแล้ว ✅");
+      await load();
     } catch (e) {
       console.error("❌ Approve error:", e);
       Alert.alert("เกิดข้อผิดพลาด", e?.message || "ไม่สามารถอนุมัติได้");
     } finally {
-      setActionLoading(false);
+      setActionLoading((p) => ({ ...p, [request.id]: false }));
     }
   };
 
   const reject = async (request) => {
-    setActionLoading(true);
+    setActionLoading((p) => ({ ...p, [request.id]: true }));
     try {
       const supabase = await getSupabase();
 
@@ -256,13 +409,13 @@ export default function AdminVolunteers() {
       }
 
       setModalVisible(false);
-      Alert.alert("สำเร็จ", "ปฏิเสธคำขอเรียบร้อยแล้ว");
-      await load(); // ✅ รีโหลดข้อมูล
+      Alert.alert("สำเร็จ", "ปฏิเสธคำขอเรียบร้อยแล้ว ❌");
+      await load();
     } catch (e) {
       console.error("❌ Reject error:", e);
       Alert.alert("เกิดข้อผิดพลาด", e?.message || "ไม่สามารถปฏิเสธได้");
     } finally {
-      setActionLoading(false);
+      setActionLoading((p) => ({ ...p, [request.id]: false }));
     }
   };
 
@@ -271,13 +424,44 @@ export default function AdminVolunteers() {
     setModalVisible(true);
   };
 
+  const confirmReject = (item) => {
+    Alert.alert(
+      "❌ ปฏิเสธคำขอ",
+      `ยืนยันการปฏิเสธ "${item.user?.full_name || "ผู้ใช้"}" หรือไม่?`,
+      [
+        { text: "ยกเลิก", style: "cancel" },
+        {
+          text: "ปฏิเสธ",
+          onPress: () => reject(item),
+          style: "destructive",
+        },
+      ],
+    );
+  };
+
+  const confirmApprove = (item) => {
+    Alert.alert(
+      "✅ อนุมัติอาสาสมัคร",
+      `ยืนยันการอนุมัติ "${item.user?.full_name || "ผู้ใช้"}" หรือไม่?`,
+      [
+        { text: "ยกเลิก", style: "cancel" },
+        {
+          text: "อนุมัติ",
+          onPress: () => approve(item),
+        },
+      ],
+    );
+  };
+
   /* ---------------- UI ---------------- */
 
   if (loading) {
     return (
-      <View style={styles.center}>
-        <ActivityIndicator size="large" color="#8B5CF6" />
-        <Text style={styles.loadingText}>กำลังโหลดข้อมูล...</Text>
+      <View style={styles.loadingContainer}>
+        <View style={styles.loadingCard}>
+          <ActivityIndicator size="large" color="#8B5CF6" />
+          <Text style={styles.loadingText}>กำลังโหลด...</Text>
+        </View>
       </View>
     );
   }
@@ -287,10 +471,12 @@ export default function AdminVolunteers() {
       {/* Header */}
       <View style={styles.header}>
         <View style={styles.headerContent}>
-          <Ionicons name="people" size={28} color="#8B5CF6" />
+          <View style={styles.headerIcon}>
+            <Ionicons name="people" size={26} color="#8B5CF6" />
+          </View>
           <View style={styles.headerTextContainer}>
             <Text style={styles.title}>คำขออาสาสมัคร</Text>
-            <View style={styles.realtimeBadge}></View>
+            <Text style={styles.subtitle}>ตรวจสอบและอนุมัติ</Text>
           </View>
         </View>
         <View style={styles.countBadge}>
@@ -298,145 +484,32 @@ export default function AdminVolunteers() {
         </View>
       </View>
 
+      {/* List or Empty State */}
       {list.length === 0 ? (
         <View style={styles.emptyContainer}>
-          <View style={styles.emptyIconCircle}>
-            <Ionicons name="checkmark-done" size={48} color="#10b981" />
+          <View style={styles.emptyIconContainer}>
+            <Ionicons name="checkmark-done-circle" size={64} color="#10B981" />
           </View>
           <Text style={styles.emptyTitle}>ไม่มีคำขอรอพิจารณา</Text>
           <Text style={styles.emptySubtitle}>
-            คำขออาสาสมัครทั้งหมดได้รับการจัดการเรียบร้อยแล้ว
+            คำขอทั้งหมดได้รับการจัดการแล้ว
           </Text>
         </View>
       ) : (
         <FlatList
           data={list}
-          keyExtractor={(i) => i.id}
-          contentContainerStyle={{ paddingBottom: 20 }}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={() => load(true)}
-              colors={["#8B5CF6"]}
-              tintColor="#8B5CF6"
-            />
-          }
+          keyExtractor={(i) => String(i.id)}
           renderItem={({ item }) => (
-            <TouchableOpacity
-              style={styles.card}
+            <VolunteerCard
+              item={item}
               onPress={() => openDetail(item)}
-              activeOpacity={0.7}
-            >
-              <View style={styles.cardHeader}>
-                <View style={styles.avatarCircle}>
-                  <Text style={styles.avatarText}>
-                    {(item.user?.full_name || "?").charAt(0).toUpperCase()}
-                  </Text>
-                </View>
-                <View style={styles.cardHeaderInfo}>
-                  <Text style={styles.name}>
-                    {item.user?.full_name || "ไม่ทราบชื่อ"}
-                  </Text>
-                  <Text style={styles.email}>
-                    {item.user?.email || item.requester_id}
-                  </Text>
-                </View>
-                <Ionicons name="chevron-forward" size={20} color="#9ca3af" />
-              </View>
-
-              <View style={styles.cardDivider} />
-
-              <View style={styles.cardBody}>
-                <View style={styles.infoRow}>
-                  <Ionicons name="calendar-outline" size={16} color="#6b7280" />
-                  <Text style={styles.infoText}>
-                    {new Date(item.created_at).toLocaleDateString("th-TH", {
-                      year: "numeric",
-                      month: "long",
-                      day: "numeric",
-                    })}
-                  </Text>
-                </View>
-
-                {!!item.phone && (
-                  <View style={styles.infoRow}>
-                    <Ionicons name="call-outline" size={16} color="#6b7280" />
-                    <Text style={styles.infoText}>{item.phone}</Text>
-                  </View>
-                )}
-
-                {!!item.area && (
-                  <View style={styles.infoRow}>
-                    <Ionicons
-                      name="location-outline"
-                      size={16}
-                      color="#6b7280"
-                    />
-                    <Text style={styles.infoText}>{item.area}</Text>
-                  </View>
-                )}
-
-                {!!item.reason && (
-                  <View style={styles.reasonContainer}>
-                    <Ionicons
-                      name="chatbubble-outline"
-                      size={16}
-                      color="#8B5CF6"
-                    />
-                    <Text style={styles.reasonText} numberOfLines={2}>
-                      {item.reason}
-                    </Text>
-                  </View>
-                )}
-              </View>
-
-              <View style={styles.cardFooter}>
-                <TouchableOpacity
-                  style={[styles.actionBtn, styles.rejectBtn]}
-                  onPress={(e) => {
-                    e.stopPropagation();
-                    Alert.alert(
-                      "ยืนยันการปฏิเสธ",
-                      `ต้องการปฏิเสธคำขอของ ${
-                        item.user?.full_name || "ผู้ใช้"
-                      }?`,
-                      [
-                        { text: "ยกเลิก", style: "cancel" },
-                        {
-                          text: "ปฏิเสธ",
-                          onPress: () => reject(item),
-                          style: "destructive",
-                        },
-                      ],
-                    );
-                  }}
-                >
-                  <Ionicons name="close-circle" size={18} color="#fff" />
-                  <Text style={styles.actionBtnText}>ปฏิเสธ</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[styles.actionBtn, styles.approveBtn]}
-                  onPress={(e) => {
-                    e.stopPropagation();
-                    Alert.alert(
-                      "ยืนยันการอนุมัติ",
-                      `ต้องการอนุมัติ ${
-                        item.user?.full_name || "ผู้ใช้"
-                      } เป็นอาสาสมัคร?`,
-                      [
-                        { text: "ยกเลิก", style: "cancel" },
-                        { text: "อนุมัติ", onPress: () => approve(item) },
-                      ],
-                    );
-                  }}
-                >
-                  <Ionicons name="checkmark-circle" size={18} color="#fff" />
-                  <Text style={styles.actionBtnText}>อนุมัติ</Text>
-                </TouchableOpacity>
-              </View>
-            </TouchableOpacity>
+              onReject={() => confirmReject(item)}
+              onApprove={() => confirmApprove(item)}
+              busy={!!actionLoading[item.id]}
+            />
           )}
+          contentContainerStyle={styles.listContent}
+          showsVerticalScrollIndicator={false}
         />
       )}
 
@@ -449,145 +522,157 @@ export default function AdminVolunteers() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
+            {/* Modal Header */}
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>รายละเอียดคำขอ</Text>
               <TouchableOpacity
                 onPress={() => setModalVisible(false)}
                 style={styles.modalCloseBtn}
+                activeOpacity={0.7}
               >
-                <Ionicons name="close" size={24} color="#6b7280" />
+                <Ionicons name="close" size={22} color="#6B7280" />
               </TouchableOpacity>
             </View>
 
+            {/* Modal Body */}
             <ScrollView
               style={styles.modalBody}
               showsVerticalScrollIndicator={false}
             >
               {selectedRequest && (
                 <>
+                  {/* User Info */}
                   <View style={styles.modalSection}>
                     <Text style={styles.modalSectionTitle}>ข้อมูลผู้สมัคร</Text>
-                    <View style={styles.modalInfoRow}>
-                      <Ionicons name="person" size={18} color="#6b7280" />
-                      <Text style={styles.modalInfoText}>
-                        {selectedRequest.user?.full_name || "ไม่ทราบชื่อ"}
-                      </Text>
-                    </View>
-                    <View style={styles.modalInfoRow}>
-                      <Ionicons name="mail" size={18} color="#6b7280" />
-                      <Text style={styles.modalInfoText}>
-                        {selectedRequest.user?.email || "ไม่มีอีเมล"}
-                      </Text>
-                    </View>
-                    <View style={styles.modalInfoRow}>
-                      <Ionicons name="call" size={18} color="#6b7280" />
-                      <Text style={styles.modalInfoText}>
-                        {selectedRequest.phone || "ไม่มีเบอร์"}
-                      </Text>
+                    <View style={styles.modalInfoCard}>
+                      <View style={styles.modalInfoRow}>
+                        <Ionicons
+                          name="person-outline"
+                          size={18}
+                          color="#8E8E93"
+                        />
+                        <Text style={styles.modalInfoText}>
+                          {selectedRequest.user?.full_name || "ไม่ทราบชื่อ"}
+                        </Text>
+                      </View>
+                      <View style={styles.modalInfoRow}>
+                        <Ionicons
+                          name="mail-outline"
+                          size={18}
+                          color="#8E8E93"
+                        />
+                        <Text style={styles.modalInfoText}>
+                          {selectedRequest.user?.email || "ไม่มีอีเมล"}
+                        </Text>
+                      </View>
+                      <View style={styles.modalInfoRow}>
+                        <Ionicons
+                          name="call-outline"
+                          size={18}
+                          color="#8E8E93"
+                        />
+                        <Text style={styles.modalInfoText}>
+                          {selectedRequest.phone || "ไม่มีเบอร์"}
+                        </Text>
+                      </View>
                     </View>
                   </View>
 
+                  {/* Reason */}
                   {!!selectedRequest.reason && (
                     <View style={styles.modalSection}>
                       <Text style={styles.modalSectionTitle}>
                         เหตุผล/แรงบันดาลใจ
                       </Text>
-                      <Text style={styles.modalDetailText}>
-                        {selectedRequest.reason}
-                      </Text>
+                      <View style={styles.modalDetailCard}>
+                        <Text style={styles.modalDetailText}>
+                          {selectedRequest.reason}
+                        </Text>
+                      </View>
                     </View>
                   )}
 
+                  {/* Area */}
                   {!!selectedRequest.area && (
                     <View style={styles.modalSection}>
                       <Text style={styles.modalSectionTitle}>
                         พื้นที่ที่สะดวก
                       </Text>
-                      <Text style={styles.modalDetailText}>
-                        {selectedRequest.area}
-                      </Text>
+                      <View style={styles.modalDetailCard}>
+                        <Text style={styles.modalDetailText}>
+                          {selectedRequest.area}
+                        </Text>
+                      </View>
                     </View>
                   )}
 
+                  {/* Availability */}
                   {!!selectedRequest.availability && (
                     <View style={styles.modalSection}>
                       <Text style={styles.modalSectionTitle}>
                         ช่วงเวลาที่ว่าง
                       </Text>
-                      <Text style={styles.modalDetailText}>
-                        {selectedRequest.availability}
-                      </Text>
+                      <View style={styles.modalDetailCard}>
+                        <Text style={styles.modalDetailText}>
+                          {selectedRequest.availability}
+                        </Text>
+                      </View>
                     </View>
                   )}
 
+                  {/* Experience */}
                   {!!selectedRequest.experience && (
                     <View style={styles.modalSection}>
                       <Text style={styles.modalSectionTitle}>ประสบการณ์</Text>
-                      <Text style={styles.modalDetailText}>
-                        {selectedRequest.experience}
-                      </Text>
+                      <View style={styles.modalDetailCard}>
+                        <Text style={styles.modalDetailText}>
+                          {selectedRequest.experience}
+                        </Text>
+                      </View>
                     </View>
                   )}
                 </>
               )}
             </ScrollView>
 
+            {/* Modal Footer */}
             <View style={styles.modalFooter}>
               <TouchableOpacity
-                style={[styles.modalActionBtn, styles.modalRejectBtn]}
-                onPress={() => {
-                  Alert.alert(
-                    "ยืนยันการปฏิเสธ",
-                    `ต้องการปฏิเสธคำขอของ ${
-                      selectedRequest?.user?.full_name || "ผู้ใช้"
-                    }?`,
-                    [
-                      { text: "ยกเลิก", style: "cancel" },
-                      {
-                        text: "ปฏิเสธ",
-                        onPress: () => reject(selectedRequest),
-                        style: "destructive",
-                      },
-                    ],
-                  );
-                }}
-                disabled={actionLoading}
+                style={[
+                  styles.modalActionBtn,
+                  styles.modalRejectBtn,
+                  actionLoading[selectedRequest?.id] && styles.btnDisabled,
+                ]}
+                onPress={() => confirmReject(selectedRequest)}
+                disabled={actionLoading[selectedRequest?.id]}
+                activeOpacity={0.8}
               >
-                {actionLoading ? (
-                  <ActivityIndicator color="#fff" size="small" />
+                {actionLoading[selectedRequest?.id] ? (
+                  <ActivityIndicator color="#FF3B30" size="small" />
                 ) : (
                   <>
-                    <Ionicons name="close-circle" size={20} color="#fff" />
-                    <Text style={styles.modalActionBtnText}>ปฏิเสธ</Text>
+                    <Ionicons name="close-circle" size={20} color="#FF3B30" />
+                    <Text style={styles.modalRejectText}>ปฏิเสธ</Text>
                   </>
                 )}
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={[styles.modalActionBtn, styles.modalApproveBtn]}
-                onPress={() => {
-                  Alert.alert(
-                    "ยืนยันการอนุมัติ",
-                    `ต้องการอนุมัติ ${
-                      selectedRequest?.user?.full_name || "ผู้ใช้"
-                    } เป็นอาสาสมัคร?`,
-                    [
-                      { text: "ยกเลิก", style: "cancel" },
-                      {
-                        text: "อนุมัติ",
-                        onPress: () => approve(selectedRequest),
-                      },
-                    ],
-                  );
-                }}
-                disabled={actionLoading}
+                style={[
+                  styles.modalActionBtn,
+                  styles.modalApproveBtn,
+                  actionLoading[selectedRequest?.id] && styles.btnDisabled,
+                ]}
+                onPress={() => confirmApprove(selectedRequest)}
+                disabled={actionLoading[selectedRequest?.id]}
+                activeOpacity={0.8}
               >
-                {actionLoading ? (
+                {actionLoading[selectedRequest?.id] ? (
                   <ActivityIndicator color="#fff" size="small" />
                 ) : (
                   <>
                     <Ionicons name="checkmark-circle" size={20} color="#fff" />
-                    <Text style={styles.modalActionBtnText}>อนุมัติ</Text>
+                    <Text style={styles.modalApproveText}>อนุมัติ</Text>
                   </>
                 )}
               </TouchableOpacity>
@@ -604,110 +689,118 @@ export default function AdminVolunteers() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f9fafb",
+    backgroundColor: "#F2F2F7",
   },
-  center: {
+  loadingContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "#f9fafb",
+    backgroundColor: "#F2F2F7",
+    padding: 20,
+  },
+  loadingCard: {
+    backgroundColor: "#fff",
+    padding: 40,
+    borderRadius: 24,
+    alignItems: "center",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.08,
+        shadowRadius: 16,
+      },
+      android: {
+        elevation: 4,
+      },
+    }),
   },
   loadingText: {
-    marginTop: 12,
-    color: "#6b7280",
-    fontSize: 14,
+    marginTop: 16,
+    fontSize: 16,
+    color: "#8E8E93",
+    fontWeight: "600",
   },
 
   // Header
   header: {
-    backgroundColor: "#fff",
-    paddingHorizontal: 20,
-    paddingTop: 40,
-    paddingBottom: 20,
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === "ios" ? 16 : 40,
+    paddingBottom: 16,
+    backgroundColor: "#fff",
     borderBottomWidth: 1,
-    borderBottomColor: "#f3f4f6",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 2,
+    borderBottomColor: "#F2F2F7",
   },
   headerContent: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    flex: 1,
+  },
+  headerIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: "#F3EEFF",
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 12,
   },
   headerTextContainer: {
-    gap: 4,
+    flex: 1,
   },
   title: {
     fontSize: 22,
-    fontWeight: "800",
-    color: "#111827",
+    fontWeight: "700",
+    color: "#000",
+    letterSpacing: -0.3,
   },
-  realtimeBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
+  subtitle: {
+    fontSize: 13,
+    color: "#8E8E93",
+    fontWeight: "500",
+    marginTop: 2,
   },
   countBadge: {
     backgroundColor: "#8B5CF6",
-    borderRadius: 20,
+    borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 6,
-    minWidth: 40,
+    minWidth: 36,
     alignItems: "center",
   },
   countText: {
     color: "#fff",
     fontSize: 16,
     fontWeight: "800",
+    letterSpacing: -0.3,
   },
 
-  // Empty State
-  emptyContainer: {
-    flex: 1,
-    justifyContent: "center",
-    alignItems: "center",
-    paddingHorizontal: 40,
-  },
-  emptyIconCircle: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    backgroundColor: "#d1fae5",
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 20,
-  },
-  emptyTitle: {
-    fontSize: 20,
-    fontWeight: "700",
-    color: "#111827",
-    marginBottom: 8,
-  },
-  emptySubtitle: {
-    fontSize: 14,
-    color: "#6b7280",
-    textAlign: "center",
-    lineHeight: 20,
+  // List
+  listContent: {
+    padding: 16,
+    paddingBottom: 24,
   },
 
   // Card
   card: {
     backgroundColor: "#fff",
-    marginHorizontal: 16,
-    marginTop: 16,
-    borderRadius: 16,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
+    borderRadius: 18,
+    marginBottom: 12,
     overflow: "hidden",
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.06,
+        shadowRadius: 8,
+      },
+      android: {
+        elevation: 2,
+      },
+    }),
   },
   cardHeader: {
     flexDirection: "row",
@@ -718,8 +811,8 @@ const styles = StyleSheet.create({
   avatarCircle: {
     width: 48,
     height: 48,
-    borderRadius: 24,
-    backgroundColor: "#ede9fe",
+    borderRadius: 14,
+    backgroundColor: "#F3EEFF",
     justifyContent: "center",
     alignItems: "center",
   },
@@ -734,21 +827,40 @@ const styles = StyleSheet.create({
   name: {
     fontSize: 16,
     fontWeight: "700",
-    color: "#111827",
-    marginBottom: 2,
+    color: "#000",
+    marginBottom: 3,
+    letterSpacing: -0.2,
   },
   email: {
     fontSize: 13,
-    color: "#6b7280",
+    color: "#8E8E93",
+    fontWeight: "500",
   },
-  cardDivider: {
-    height: 1,
-    backgroundColor: "#f3f4f6",
-    marginHorizontal: 16,
+  statusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: "#FFF9E6",
+    gap: 5,
+  },
+  badgeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#FF9500",
+  },
+  statusText: {
+    fontSize: 12,
+    fontWeight: "700",
+    color: "#CC7A00",
+    letterSpacing: 0.2,
   },
   cardBody: {
-    padding: 16,
-    gap: 10,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    gap: 8,
   },
   infoRow: {
     flexDirection: "row",
@@ -756,31 +868,33 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   infoText: {
-    fontSize: 14,
+    fontSize: 13,
     color: "#374151",
+    fontWeight: "500",
     flex: 1,
   },
   reasonContainer: {
     flexDirection: "row",
     gap: 8,
-    backgroundColor: "#faf5ff",
+    backgroundColor: "#FAFAFA",
     padding: 12,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#e9d5ff",
+    borderColor: "#F0F0F0",
   },
   reasonText: {
     fontSize: 13,
-    color: "#6b21a8",
+    color: "#6B21A8",
     flex: 1,
     lineHeight: 18,
+    fontWeight: "500",
   },
   cardFooter: {
     flexDirection: "row",
     padding: 16,
-    gap: 12,
+    gap: 10,
     borderTopWidth: 1,
-    borderTopColor: "#f3f4f6",
+    borderTopColor: "#F2F2F7",
   },
   actionBtn: {
     flex: 1,
@@ -788,19 +902,64 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     gap: 6,
-    paddingVertical: 12,
+    paddingVertical: 13,
     borderRadius: 12,
   },
   rejectBtn: {
-    backgroundColor: "#ef4444",
+    backgroundColor: "#FFF5F5",
+    borderWidth: 1.5,
+    borderColor: "#FFE0E0",
   },
   approveBtn: {
-    backgroundColor: "#10b981",
+    backgroundColor: "#10B981",
+    borderWidth: 1.5,
+    borderColor: "#10B981",
   },
-  actionBtnText: {
+  rejectBtnText: {
+    color: "#FF3B30",
+    fontWeight: "700",
+    fontSize: 15,
+    letterSpacing: -0.2,
+  },
+  approveBtnText: {
     color: "#fff",
     fontWeight: "700",
     fontSize: 15,
+    letterSpacing: -0.2,
+  },
+  btnDisabled: {
+    opacity: 0.5,
+  },
+
+  // Empty State
+  emptyContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    paddingHorizontal: 40,
+    paddingBottom: 60,
+  },
+  emptyIconContainer: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: "#D1FAE5",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 20,
+  },
+  emptyTitle: {
+    fontSize: 20,
+    fontWeight: "700",
+    color: "#000",
+    marginBottom: 8,
+    letterSpacing: -0.3,
+  },
+  emptySubtitle: {
+    fontSize: 15,
+    color: "#8E8E93",
+    textAlign: "center",
+    lineHeight: 21,
   },
 
   // Modal
@@ -814,7 +973,6 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
     maxHeight: "90%",
-    paddingBottom: 20,
   },
   modalHeader: {
     flexDirection: "row",
@@ -822,18 +980,19 @@ const styles = StyleSheet.create({
     alignItems: "center",
     padding: 20,
     borderBottomWidth: 1,
-    borderBottomColor: "#f3f4f6",
+    borderBottomColor: "#F2F2F7",
   },
   modalTitle: {
     fontSize: 20,
     fontWeight: "800",
-    color: "#111827",
+    color: "#000",
+    letterSpacing: -0.3,
   },
   modalCloseBtn: {
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: "#f3f4f6",
+    backgroundColor: "#F2F2F7",
     justifyContent: "center",
     alignItems: "center",
   },
@@ -843,37 +1002,50 @@ const styles = StyleSheet.create({
   },
   modalSection: {
     paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: "#f3f4f6",
   },
   modalSectionTitle: {
-    fontSize: 14,
+    fontSize: 12,
     fontWeight: "700",
     color: "#8B5CF6",
     marginBottom: 12,
     textTransform: "uppercase",
     letterSpacing: 0.5,
   },
+  modalInfoCard: {
+    backgroundColor: "#FAFAFA",
+    borderRadius: 12,
+    padding: 14,
+    gap: 10,
+  },
   modalInfoRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    marginBottom: 8,
   },
   modalInfoText: {
     fontSize: 15,
     color: "#374151",
+    fontWeight: "500",
+    flex: 1,
+  },
+  modalDetailCard: {
+    backgroundColor: "#FAFAFA",
+    borderRadius: 12,
+    padding: 14,
   },
   modalDetailText: {
     fontSize: 15,
     color: "#374151",
     lineHeight: 22,
+    fontWeight: "500",
   },
   modalFooter: {
     flexDirection: "row",
     paddingHorizontal: 20,
-    paddingTop: 16,
+    paddingVertical: 20,
     gap: 12,
+    borderTopWidth: 1,
+    borderTopColor: "#F2F2F7",
   },
   modalActionBtn: {
     flex: 1,
@@ -885,14 +1057,25 @@ const styles = StyleSheet.create({
     borderRadius: 14,
   },
   modalRejectBtn: {
-    backgroundColor: "#ef4444",
+    backgroundColor: "#FFF5F5",
+    borderWidth: 1.5,
+    borderColor: "#FFE0E0",
   },
   modalApproveBtn: {
-    backgroundColor: "#10b981",
+    backgroundColor: "#10B981",
+    borderWidth: 1.5,
+    borderColor: "#10B981",
   },
-  modalActionBtnText: {
+  modalRejectText: {
+    color: "#FF3B30",
+    fontWeight: "800",
+    fontSize: 16,
+    letterSpacing: -0.2,
+  },
+  modalApproveText: {
     color: "#fff",
     fontWeight: "800",
     fontSize: 16,
+    letterSpacing: -0.2,
   },
 });

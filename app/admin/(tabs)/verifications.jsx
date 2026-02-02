@@ -11,7 +11,6 @@ import {
   Image,
   Modal,
   Platform,
-  RefreshControl,
   SafeAreaView,
   StyleSheet,
   Text,
@@ -46,6 +45,7 @@ const VerificationCard = ({ item, onPress, onReject, onApprove, busy }) => {
   const slideAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(1)).current;
   const [imageModalVisible, setImageModalVisible] = useState(false);
+  const [imageLoaded, setImageLoaded] = useState(false);
 
   useEffect(() => {
     Animated.spring(slideAnim, {
@@ -58,7 +58,7 @@ const VerificationCard = ({ item, onPress, onReject, onApprove, busy }) => {
 
   const handlePressIn = () => {
     Animated.spring(scaleAnim, {
-      toValue: 0.98,
+      toValue: 0.97,
       useNativeDriver: true,
     }).start();
   };
@@ -67,6 +67,7 @@ const VerificationCard = ({ item, onPress, onReject, onApprove, busy }) => {
     Animated.spring(scaleAnim, {
       toValue: 1,
       useNativeDriver: true,
+      friction: 3,
     }).start();
   };
 
@@ -78,9 +79,9 @@ const VerificationCard = ({ item, onPress, onReject, onApprove, busy }) => {
         style={{
           transform: [
             {
-              translateX: slideAnim.interpolate({
+              translateY: slideAnim.interpolate({
                 inputRange: [0, 1],
-                outputRange: [50, 0],
+                outputRange: [30, 0],
               }),
             },
             { scale: scaleAnim },
@@ -89,7 +90,7 @@ const VerificationCard = ({ item, onPress, onReject, onApprove, busy }) => {
         }}
       >
         <TouchableOpacity
-          activeOpacity={1}
+          activeOpacity={0.95}
           onPress={onPress}
           onPressIn={handlePressIn}
           onPressOut={handlePressOut}
@@ -107,19 +108,24 @@ const VerificationCard = ({ item, onPress, onReject, onApprove, busy }) => {
                     }}
                     style={styles.avatar}
                   />
-                  <View style={styles.statusIndicator} />
+                  <View style={styles.statusIndicator}>
+                    <View style={styles.statusPulse} />
+                  </View>
                 </View>
 
                 <View style={styles.userDetails}>
                   <Text style={styles.userName} numberOfLines={1}>
                     {u?.full_name || "ไม่ระบุชื่อ"}
                   </Text>
-                  <Text style={styles.userEmail} numberOfLines={1}>
-                    {u?.email || "-"}
-                  </Text>
-                  <View style={styles.phoneRow}>
-                    <Ionicons name="call" size={12} color="#8E8E93" />
-                    <Text style={styles.phoneText}>
+                  <View style={styles.infoRow}>
+                    <Ionicons name="mail-outline" size={13} color="#8E8E93" />
+                    <Text style={styles.infoText} numberOfLines={1}>
+                      {u?.email || "-"}
+                    </Text>
+                  </View>
+                  <View style={styles.infoRow}>
+                    <Ionicons name="call-outline" size={13} color="#8E8E93" />
+                    <Text style={styles.infoText}>
                       {item.phone_number || "-"}
                     </Text>
                   </View>
@@ -127,14 +133,14 @@ const VerificationCard = ({ item, onPress, onReject, onApprove, busy }) => {
               </View>
 
               <View style={styles.statusBadge}>
-                <View style={styles.pulseDot} />
-                <Text style={styles.statusText}>รอตรวจสอบ</Text>
+                <View style={styles.badgeDot} />
+                <Text style={styles.statusText}>รอ</Text>
               </View>
             </View>
 
-            {/* Time Info */}
-            <View style={styles.timeInfo}>
-              <Ionicons name="time-outline" size={14} color="#8E8E93" />
+            {/* Time Chip */}
+            <View style={styles.timeChip}>
+              <Ionicons name="time-outline" size={13} color="#8E8E93" />
               <Text style={styles.timeText}>
                 {formatDateTime(item.created_at)}
               </Text>
@@ -143,24 +149,32 @@ const VerificationCard = ({ item, onPress, onReject, onApprove, busy }) => {
             {/* ID Card Preview */}
             {item.id_card_url ? (
               <TouchableOpacity
-                activeOpacity={0.9}
+                activeOpacity={0.85}
                 style={styles.idCardContainer}
                 onPress={() => setImageModalVisible(true)}
               >
+                {!imageLoaded && (
+                  <View style={styles.imagePlaceholder}>
+                    <ActivityIndicator size="small" color="#007AFF" />
+                  </View>
+                )}
                 <Image
                   source={{ uri: item.id_card_url }}
                   style={styles.idCardImage}
+                  onLoad={() => setImageLoaded(true)}
                 />
                 <View style={styles.imageOverlay}>
-                  <View style={styles.expandButton}>
-                    <Ionicons name="expand" size={16} color="#fff" />
-                    <Text style={styles.expandText}>ดูรูปเต็ม</Text>
+                  <View style={styles.expandChip}>
+                    <Ionicons name="expand" size={14} color="#fff" />
+                    <Text style={styles.expandText}>ขยาย</Text>
                   </View>
                 </View>
               </TouchableOpacity>
             ) : (
               <View style={styles.noImageContainer}>
-                <Ionicons name="image-outline" size={32} color="#C7C7CC" />
+                <View style={styles.noImageIcon}>
+                  <Ionicons name="document-outline" size={28} color="#C7C7CC" />
+                </View>
                 <Text style={styles.noImageText}>ไม่มีเอกสารแนบ</Text>
               </View>
             )}
@@ -175,12 +189,13 @@ const VerificationCard = ({ item, onPress, onReject, onApprove, busy }) => {
                 ]}
                 disabled={busy}
                 onPress={onReject}
+                activeOpacity={0.8}
               >
                 {busy ? (
                   <ActivityIndicator size="small" color="#FF3B30" />
                 ) : (
                   <>
-                    <Ionicons name="close-circle" size={20} color="#FF3B30" />
+                    <Ionicons name="close-circle" size={18} color="#FF3B30" />
                     <Text style={styles.rejectButtonText}>ปฏิเสธ</Text>
                   </>
                 )}
@@ -194,16 +209,13 @@ const VerificationCard = ({ item, onPress, onReject, onApprove, busy }) => {
                 ]}
                 disabled={busy}
                 onPress={onApprove}
+                activeOpacity={0.8}
               >
                 {busy ? (
-                  <ActivityIndicator size="small" color="#34C759" />
+                  <ActivityIndicator size="small" color="#fff" />
                 ) : (
                   <>
-                    <Ionicons
-                      name="checkmark-circle"
-                      size={20}
-                      color="#34C759"
-                    />
+                    <Ionicons name="checkmark-circle" size={18} color="#fff" />
                     <Text style={styles.approveButtonText}>อนุมัติ</Text>
                   </>
                 )}
@@ -224,18 +236,20 @@ const VerificationCard = ({ item, onPress, onReject, onApprove, busy }) => {
           <TouchableOpacity
             style={styles.modalCloseButton}
             onPress={() => setImageModalVisible(false)}
+            activeOpacity={0.8}
           >
-            <Ionicons name="close" size={28} color="#fff" />
+            <Ionicons name="close" size={24} color="#fff" />
           </TouchableOpacity>
 
           <View style={styles.modalContent}>
             <Image
               source={{ uri: item.id_card_url }}
               style={styles.modalImage}
+              resizeMode="contain"
             />
           </View>
 
-          <Text style={styles.modalHint}>แตะ × เพื่อปิด</Text>
+          <Text style={styles.modalHint}>แตะเพื่อปิด</Text>
         </View>
       </Modal>
     </>
@@ -245,8 +259,8 @@ const VerificationCard = ({ item, onPress, onReject, onApprove, busy }) => {
 // ✨ Stats Card Component
 const StatsCard = ({ icon, label, count, color }) => (
   <View style={[styles.statsCard, { borderLeftColor: color }]}>
-    <View style={[styles.statsIcon, { backgroundColor: `${color}15` }]}>
-      <Ionicons name={icon} size={20} color={color} />
+    <View style={[styles.statsIcon, { backgroundColor: `${color}10` }]}>
+      <Ionicons name={icon} size={22} color={color} />
     </View>
     <View style={styles.statsContent}>
       <Text style={styles.statsCount}>{count}</Text>
@@ -260,7 +274,6 @@ export default function AdminVerifications() {
   const router = useRouter();
 
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [requests, setRequests] = useState([]);
   const [actionLoading, setActionLoading] = useState({});
 
@@ -299,25 +312,16 @@ export default function AdminVerifications() {
     }
   };
 
-  const onRefresh = async () => {
-    setRefreshing(true);
-    try {
-      await loadPending();
-    } finally {
-      setRefreshing(false);
-    }
-  };
-
   const confirmReview = (item, status) => {
     const u = item.users;
     const title =
       status === "verified"
-        ? "อนุมัติการยืนยันตัวตน?"
-        : "ปฏิเสธการยืนยันตัวตน?";
+        ? "✅ อนุมัติการยืนยันตัวตน"
+        : "❌ ปฏิเสธการยืนยันตัวตน";
     const msg =
       status === "verified"
-        ? `ยืนยันการอนุมัติ ${u?.full_name || "ผู้ใช้"} นี้หรือไม่?`
-        : `ยืนยันการปฏิเสธ ${u?.full_name || "ผู้ใช้"} นี้หรือไม่?`;
+        ? `ยืนยันการอนุมัติ "${u?.full_name || "ผู้ใช้"}" หรือไม่?`
+        : `ยืนยันการปฏิเสธ "${u?.full_name || "ผู้ใช้"}" หรือไม่?`;
 
     Alert.alert(title, msg, [
       { text: "ยกเลิก", style: "cancel" },
@@ -348,7 +352,7 @@ export default function AdminVerifications() {
       if (error) throw error;
 
       Alert.alert(
-        "สำเร็จ!",
+        "สำเร็จ",
         status === "verified"
           ? "อนุมัติเรียบร้อยแล้ว ✅"
           : "ปฏิเสธเรียบร้อยแล้ว ❌",
@@ -379,7 +383,7 @@ export default function AdminVerifications() {
         <View style={styles.loadingContainer}>
           <View style={styles.loadingCard}>
             <ActivityIndicator size="large" color="#007AFF" />
-            <Text style={styles.loadingText}>กำลังโหลดคำขอยืนยันตัวตน...</Text>
+            <Text style={styles.loadingText}>กำลังโหลด...</Text>
           </View>
         </View>
       </SafeAreaView>
@@ -392,19 +396,13 @@ export default function AdminVerifications() {
       <View style={styles.header}>
         <View style={styles.headerContent}>
           <View style={styles.headerIcon}>
-            <Ionicons name="shield-checkmark" size={28} color="#007AFF" />
+            <Ionicons name="shield-checkmark" size={26} color="#007AFF" />
           </View>
           <View style={styles.headerTextContainer}>
-            <Text style={styles.headerTitle}>ตรวจสอบตัวตน</Text>
-            <Text style={styles.headerSubtitle}>
-              จัดการคำขอยืนยันตัวตนของอาสาสมัคร
-            </Text>
+            <Text style={styles.headerTitle}>ยืนยันตัวตน</Text>
+            <Text style={styles.headerSubtitle}>ตรวจสอบและอนุมัติคำขอ</Text>
           </View>
         </View>
-
-        <TouchableOpacity style={styles.refreshButton} onPress={onRefresh}>
-          <Ionicons name="refresh" size={20} color="#007AFF" />
-        </TouchableOpacity>
       </View>
 
       {/* Stats Section */}
@@ -421,16 +419,10 @@ export default function AdminVerifications() {
       {requests.length === 0 ? (
         <View style={styles.emptyContainer}>
           <View style={styles.emptyIconContainer}>
-            <Ionicons name="checkmark-done-circle" size={64} color="#C7C7CC" />
+            <Ionicons name="checkmark-done-circle" size={64} color="#D1D1D6" />
           </View>
           <Text style={styles.emptyTitle}>ไม่มีคำขอรอตรวจสอบ</Text>
-          <Text style={styles.emptySubtitle}>
-            คำขอยืนยันตัวตนใหม่จะปรากฏที่นี่
-          </Text>
-          <TouchableOpacity style={styles.emptyButton} onPress={onRefresh}>
-            <Ionicons name="refresh" size={18} color="#fff" />
-            <Text style={styles.emptyButtonText}>รีเฟรช</Text>
-          </TouchableOpacity>
+          <Text style={styles.emptySubtitle}>คำขอใหม่จะแสดงที่นี่</Text>
         </View>
       ) : (
         <FlatList
@@ -439,14 +431,6 @@ export default function AdminVerifications() {
           renderItem={renderItem}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor="#007AFF"
-              colors={["#007AFF"]}
-            />
-          }
         />
       )}
     </SafeAreaView>
@@ -457,26 +441,28 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: "#F2F2F7",
+    paddingTop: 25,
   },
   loadingContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
+    padding: 20,
   },
   loadingCard: {
     backgroundColor: "#fff",
-    padding: 32,
-    borderRadius: 20,
+    padding: 40,
+    borderRadius: 24,
     alignItems: "center",
     ...Platform.select({
       ios: {
         shadowColor: "#000",
-        shadowOffset: { width: 0, height: 4 },
-        shadowOpacity: 0.1,
-        shadowRadius: 12,
+        shadowOffset: { width: 0, height: 8 },
+        shadowOpacity: 0.08,
+        shadowRadius: 16,
       },
       android: {
-        elevation: 8,
+        elevation: 4,
       },
     }),
   },
@@ -484,20 +470,19 @@ const styles = StyleSheet.create({
     marginTop: 16,
     fontSize: 16,
     color: "#8E8E93",
-    fontWeight: "500",
+    fontWeight: "600",
   },
 
   // Header Styles
   header: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
     paddingHorizontal: 20,
-    paddingTop: Platform.OS === "ios" ? 60 : 40,
-    paddingBottom: 20,
+    paddingTop: Platform.OS === "ios" ? 16 : 16,
+    paddingBottom: 16,
     backgroundColor: "#fff",
     borderBottomWidth: 1,
-    borderBottomColor: "#E5E5EA",
+    borderBottomColor: "#F2F2F7",
   },
   headerContent: {
     flexDirection: "row",
@@ -505,95 +490,91 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   headerIcon: {
-    width: 56,
-    height: 56,
-    borderRadius: 16,
+    width: 48,
+    height: 48,
+    borderRadius: 14,
     backgroundColor: "#F0F8FF",
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 14,
+    marginRight: 12,
   },
   headerTextContainer: {
     flex: 1,
   },
   headerTitle: {
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: "700",
     color: "#000",
-    marginBottom: 2,
+    letterSpacing: -0.3,
   },
   headerSubtitle: {
     fontSize: 13,
     color: "#8E8E93",
     fontWeight: "500",
-  },
-  refreshButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: "#F0F8FF",
-    alignItems: "center",
-    justifyContent: "center",
+    marginTop: 2,
   },
 
   // Stats Section
   statsSection: {
     paddingHorizontal: 16,
-    paddingVertical: 16,
+    paddingVertical: 12,
     backgroundColor: "#fff",
+    borderBottomWidth: 1,
+    borderBottomColor: "#F2F2F7",
   },
   statsCard: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#F9F9FB",
-    padding: 16,
-    borderRadius: 16,
-    borderLeftWidth: 4,
+    backgroundColor: "#FAFAFA",
+    padding: 14,
+    borderRadius: 14,
+    borderLeftWidth: 3,
   },
   statsIcon: {
-    width: 48,
-    height: 48,
+    width: 44,
+    height: 44,
     borderRadius: 12,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 14,
+    marginRight: 12,
   },
   statsContent: {
     flex: 1,
   },
   statsCount: {
-    fontSize: 28,
+    fontSize: 26,
     fontWeight: "800",
     color: "#000",
-    marginBottom: 2,
+    letterSpacing: -0.5,
   },
   statsLabel: {
-    fontSize: 14,
+    fontSize: 13,
     color: "#8E8E93",
     fontWeight: "600",
+    marginTop: 2,
   },
 
   // List Content
   listContent: {
     padding: 16,
-    paddingBottom: 32,
+    paddingBottom: 24,
   },
 
   // Card Styles
   card: {
     backgroundColor: "#fff",
-    borderRadius: 20,
+    borderRadius: 18,
     padding: 16,
-    marginBottom: 16,
+    marginBottom: 12,
     ...Platform.select({
       ios: {
         shadowColor: "#000",
         shadowOffset: { width: 0, height: 2 },
-        shadowOpacity: 0.08,
-        shadowRadius: 12,
+        shadowOpacity: 0.06,
+        shadowRadius: 8,
       },
       android: {
-        elevation: 3,
+        elevation: 2,
       },
     }),
   },
@@ -601,146 +582,175 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
-    marginBottom: 14,
+    marginBottom: 12,
   },
   userSection: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-start",
     flex: 1,
-    marginRight: 12,
+    marginRight: 8,
   },
   avatarContainer: {
     position: "relative",
     marginRight: 12,
   },
   avatar: {
-    width: 56,
-    height: 56,
-    borderRadius: 16,
+    width: 52,
+    height: 52,
+    borderRadius: 14,
     backgroundColor: "#F2F2F7",
   },
   statusIndicator: {
     position: "absolute",
-    bottom: 2,
-    right: 2,
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: "#FF9500",
+    bottom: 0,
+    right: 0,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: "#fff",
+    alignItems: "center",
+    justifyContent: "center",
     borderWidth: 2,
     borderColor: "#fff",
   },
+  statusPulse: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "#FF9500",
+  },
   userDetails: {
     flex: 1,
+    paddingTop: 2,
   },
   userName: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: "700",
     color: "#000",
-    marginBottom: 3,
+    marginBottom: 6,
+    letterSpacing: -0.2,
   },
-  userEmail: {
-    fontSize: 13,
-    color: "#8E8E93",
-    marginBottom: 4,
-  },
-  phoneRow: {
+  infoRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
+    gap: 6,
+    marginBottom: 4,
   },
-  phoneText: {
-    fontSize: 12,
+  infoText: {
+    fontSize: 13,
     color: "#8E8E93",
     fontWeight: "500",
+    flex: 1,
   },
   statusBadge: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
     backgroundColor: "#FFF9E6",
-    gap: 6,
+    gap: 5,
   },
-  pulseDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+  badgeDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
     backgroundColor: "#FF9500",
   },
   statusText: {
     fontSize: 12,
     fontWeight: "700",
     color: "#CC7A00",
+    letterSpacing: 0.2,
   },
 
-  // Time Info
-  timeInfo: {
+  // Time Chip
+  timeChip: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
+    alignSelf: "flex-start",
+    gap: 5,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
     backgroundColor: "#F9F9FB",
-    borderRadius: 10,
-    marginBottom: 14,
+    borderRadius: 8,
+    marginBottom: 12,
   },
   timeText: {
-    fontSize: 13,
+    fontSize: 12,
     color: "#8E8E93",
-    fontWeight: "500",
+    fontWeight: "600",
   },
 
   // ID Card Preview
   idCardContainer: {
-    borderRadius: 16,
+    borderRadius: 14,
     overflow: "hidden",
-    marginBottom: 14,
-    backgroundColor: "#F2F2F7",
+    marginBottom: 12,
+    backgroundColor: "#F9F9FB",
+    position: "relative",
+  },
+  imagePlaceholder: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F9F9FB",
+    zIndex: 1,
   },
   idCardImage: {
     width: "100%",
-    height: 200,
-    backgroundColor: "#F2F2F7",
+    height: 180,
+    backgroundColor: "#F9F9FB",
   },
   imageOverlay: {
     position: "absolute",
     bottom: 0,
     left: 0,
     right: 0,
-    padding: 12,
+    padding: 10,
     flexDirection: "row",
     justifyContent: "flex-end",
   },
-  expandButton: {
+  expandChip: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(0, 0, 0, 0.7)",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
-    gap: 6,
+    backgroundColor: "rgba(0, 0, 0, 0.75)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    gap: 4,
   },
   expandText: {
     color: "#fff",
     fontSize: 12,
-    fontWeight: "600",
+    fontWeight: "700",
   },
   noImageContainer: {
-    height: 140,
-    borderRadius: 16,
-    backgroundColor: "#F9F9FB",
+    height: 120,
+    borderRadius: 14,
+    backgroundColor: "#FAFAFA",
     borderWidth: 2,
     borderColor: "#E5E5EA",
     borderStyle: "dashed",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 14,
+    marginBottom: 12,
     gap: 8,
   },
+  noImageIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: "#F2F2F7",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   noImageText: {
-    fontSize: 14,
+    fontSize: 13,
     color: "#C7C7CC",
     fontWeight: "600",
   },
@@ -748,36 +758,38 @@ const styles = StyleSheet.create({
   // Action Buttons
   actionContainer: {
     flexDirection: "row",
-    gap: 12,
+    gap: 10,
   },
   actionButton: {
     flex: 1,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 14,
-    borderRadius: 14,
-    gap: 8,
+    paddingVertical: 13,
+    borderRadius: 12,
+    gap: 6,
   },
   rejectButton: {
-    backgroundColor: "#FFF0F0",
-    borderWidth: 1,
-    borderColor: "#FFCDD2",
+    backgroundColor: "#FFF5F5",
+    borderWidth: 1.5,
+    borderColor: "#FFE0E0",
   },
   approveButton: {
-    backgroundColor: "#F0FFF4",
-    borderWidth: 1,
-    borderColor: "#C6F6D5",
+    backgroundColor: "#34C759",
+    borderWidth: 1.5,
+    borderColor: "#34C759",
   },
   rejectButtonText: {
     fontSize: 15,
     fontWeight: "700",
     color: "#FF3B30",
+    letterSpacing: -0.2,
   },
   approveButtonText: {
     fontSize: 15,
     fontWeight: "700",
-    color: "#34C759",
+    color: "#fff",
+    letterSpacing: -0.2,
   },
   buttonDisabled: {
     opacity: 0.5,
@@ -788,80 +800,68 @@ const styles = StyleSheet.create({
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    paddingHorizontal: 32,
+    paddingHorizontal: 40,
+    paddingBottom: 60,
   },
   emptyIconContainer: {
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    backgroundColor: "#F2F2F7",
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: "#FAFAFA",
     alignItems: "center",
     justifyContent: "center",
     marginBottom: 20,
   },
   emptyTitle: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: "700",
     color: "#000",
     marginBottom: 8,
+    letterSpacing: -0.3,
   },
   emptySubtitle: {
     fontSize: 15,
     color: "#8E8E93",
     textAlign: "center",
-    marginBottom: 24,
-    lineHeight: 22,
-  },
-  emptyButton: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#007AFF",
-    paddingHorizontal: 24,
-    paddingVertical: 14,
-    borderRadius: 14,
-    gap: 8,
-  },
-  emptyButtonText: {
-    color: "#fff",
-    fontSize: 16,
-    fontWeight: "700",
+    lineHeight: 21,
   },
 
   // Modal Styles
   modalBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.9)",
+    backgroundColor: "rgba(0, 0, 0, 0.95)",
     justifyContent: "center",
     alignItems: "center",
     padding: 20,
   },
   modalCloseButton: {
     position: "absolute",
-    top: Platform.OS === "ios" ? 60 : 20,
+    top: Platform.OS === "ios" ? 60 : 40,
     right: 20,
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: "rgba(255, 255, 255, 0.2)",
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "rgba(255, 255, 255, 0.15)",
     alignItems: "center",
     justifyContent: "center",
     zIndex: 10,
+    borderWidth: 1,
+    borderColor: "rgba(255, 255, 255, 0.1)",
   },
   modalContent: {
     width: "100%",
-    borderRadius: 20,
+    borderRadius: 16,
     overflow: "hidden",
     backgroundColor: "#000",
   },
   modalImage: {
     width: "100%",
     height: 500,
-    resizeMode: "contain",
   },
   modalHint: {
-    marginTop: 20,
-    color: "rgba(255, 255, 255, 0.7)",
-    fontSize: 14,
+    marginTop: 16,
+    color: "rgba(255, 255, 255, 0.6)",
+    fontSize: 13,
     fontWeight: "600",
   },
 });

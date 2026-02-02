@@ -1,9 +1,18 @@
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { useRouter, useSegments } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, View } from "react-native";
 import { createClerkSupabaseClient } from "../config/supabaseClient";
 import { saveUserRole } from "../utils/roleStorage";
+
+/**
+ * ✅ ปรับให้ตรงกับโครงสร้าง route ของคุณ
+ * - ถ้าใช้ folder: app/admin/dashboard -> "/admin/dashboard"
+ * - ถ้าใช้ group:  app/(admin)/dashboard -> "/(admin)/dashboard"
+ */
+const ADMIN_PATH = "/admin/dashboard"; // <- ถ้าใช้ (admin) ให้เปลี่ยนเป็น "/(admin)/dashboard"
+const VOLUNTEER_PATH = "/volunteer";
+const USER_HOME_PATH = "/(tabs)/home";
 
 export default function AuthWrapper({ children }) {
   const { isSignedIn, getToken } = useAuth();
@@ -12,44 +21,55 @@ export default function AuthWrapper({ children }) {
   const segments = useSegments();
   const [loading, setLoading] = useState(true);
 
+  // กันยิงซ้ำ
+  const syncingRef = useRef(false);
+  const lastSyncedUserIdRef = useRef(null);
+
   useEffect(() => {
     const syncUserAndRedirect = async () => {
       if (!isLoaded) return;
 
+      // ✅ ถ้า logout ต้อง reset guard ไม่งั้น login รอบ 2 จะไม่ redirect
       if (!isSignedIn) {
+        syncingRef.current = false;
+        lastSyncedUserIdRef.current = null;
+
         setLoading(false);
         if (segments[0] !== "login") router.replace("/login");
         return;
       }
 
-      if (!user) {
+      if (!user?.id) {
         setLoading(false);
         return;
       }
+
+      // ✅ guard กัน effect ยิงซ้ำ
+      if (syncingRef.current) return;
+
+      // ✅ ถ้าซิงค์ user เดิมไปแล้ว ไม่ต้องทำซ้ำ
+      // (แต่จะไม่พังอีกแล้ว เพราะเรา reset ตอน logout ด้านบน)
+      if (lastSyncedUserIdRef.current === user.id) {
+        setLoading(false);
+        return;
+      }
+
+      syncingRef.current = true;
 
       try {
         const token = await getToken({ template: "supabase" });
         const supabase = createClerkSupabaseClient(token);
 
-        // ✅ ดึงข้อมูลจาก Clerk (ครอบคลุมทุกกรณี)
-        console.log("🔍 RAW Clerk User Object:", {
-          firstName: user.firstName,
-          lastName: user.lastName,
-          fullName: user.fullName,
-          username: user.username,
-          imageUrl: user.imageUrl,
-          profileImageUrl: user.profileImageUrl,
-          unsafeMetadata: user.unsafeMetadata,
-          publicMetadata: user.publicMetadata,
-        });
+        // ---- Clerk data ----
+        const clerkEmail = user.primaryEmailAddress?.emailAddress || "";
 
         const clerkFullName =
+          user.unsafeMetadata?.name ||
+          user.publicMetadata?.name ||
           [user.firstName, user.lastName].filter(Boolean).join(" ").trim() ||
           user.fullName ||
           user.username ||
-          user.unsafeMetadata?.full_name ||
-          user.publicMetadata?.full_name ||
-          user.primaryEmailAddress?.emailAddress?.split("@")[0] ||
+          (clerkEmail ? clerkEmail.split("@")[0] : "") ||
           "ผู้ใช้งาน";
 
         const clerkAvatarUrl =
@@ -59,119 +79,100 @@ export default function AuthWrapper({ children }) {
           user.publicMetadata?.avatar_url ||
           "";
 
-        const clerkEmail = user.primaryEmailAddress?.emailAddress || "";
-
-        console.log("🔍 Processed Clerk Data:", {
-          fullName: clerkFullName,
-          avatar: clerkAvatarUrl,
+        console.log("🧩 Clerk user:", {
+          clerkUserId: user.id,
           email: clerkEmail,
+          fullName: clerkFullName,
+          segments,
         });
 
-        // 1️⃣ เช็คว่ามี user นี้ใน DB แล้วหรือยัง
-        const { data: existingUser, error: existingError } = await supabase
+        // 1) อ่าน row ก่อน
+        const { data: existing, error: readErr } = await supabase
           .from("users")
-          .select("id, role, full_name, avatar_url, email")
+          .select("clerk_id, role")
           .eq("clerk_id", user.id)
           .maybeSingle();
 
-        if (existingError) {
-          console.log("❌ existingUser error:", existingError);
-        }
+        console.log("🧩 DB existing:", { existing, readErr });
 
-        // 2️⃣ ถ้าไม่มี → สร้างใหม่ (LOGIN ครั้งแรก)
-        if (!existingUser) {
-          const payload = {
+        // 2) ถ้าไม่มีก็ insert (อย่าส่ง role)
+        if (!existing) {
+          const { error: insertErr } = await supabase.from("users").insert({
             clerk_id: user.id,
             email: clerkEmail,
             full_name: clerkFullName,
             avatar_url: clerkAvatarUrl,
-            role: "user", // default role
-            created_at: new Date().toISOString(),
-          };
+          });
 
-          console.log("✅ Creating new user:", payload);
-
-          const { error: insertError } = await supabase
-            .from("users")
-            .insert(payload);
-
-          if (insertError) {
-            console.log("❌ insert users error:", insertError);
+          if (insertErr) {
+            console.log("❌ insert users error:", insertErr);
           } else {
-            console.log("✅ User created successfully (first login)");
+            console.log("✅ inserted new user row");
           }
         } else {
-          // 3️⃣ LOGIN ครั้งที่ 2+ → อัพเดตเฉพาะ field ที่ว่าง (ไม่ทับข้อมูลที่ user แก้)
-          const updates = {};
+          // 3) ถ้ามีก็ update เฉพาะโปรไฟล์ (อย่าแตะ role)
+          const { error: updateErr } = await supabase
+            .from("users")
+            .update({
+              email: clerkEmail,
+              full_name: clerkFullName,
+              avatar_url: clerkAvatarUrl,
+            })
+            .eq("clerk_id", user.id);
 
-          if (!existingUser.email && clerkEmail) {
-            updates.email = clerkEmail;
-          }
-
-          if (!existingUser.full_name && clerkFullName !== "ผู้ใช้งาน") {
-            updates.full_name = clerkFullName;
-          }
-
-          if (!existingUser.avatar_url && clerkAvatarUrl) {
-            updates.avatar_url = clerkAvatarUrl;
-          }
-
-          if (Object.keys(updates).length > 0) {
-            updates.updated_at = new Date().toISOString();
-
-            console.log("🔄 Updating empty fields:", updates);
-
-            const { error: updateError } = await supabase
-              .from("users")
-              .update(updates)
-              .eq("clerk_id", user.id);
-
-            if (updateError) {
-              console.log("❌ update users error:", updateError);
-            } else {
-              console.log("✅ User updated successfully");
-            }
+          if (updateErr) {
+            console.log("❌ update users error:", updateErr);
+          } else {
+            console.log("✅ updated user profile fields");
           }
         }
 
-        // 4️⃣ ดึง role จาก DB
-        const { data, error } = await supabase
+        // 4) ดึง role เป็น source of truth
+        const { data: roleRow, error: roleErr } = await supabase
           .from("users")
           .select("role")
           .eq("clerk_id", user.id)
-          .single();
+          .maybeSingle();
 
-        if (error || !data?.role) {
-          console.log("❌ Cannot get user role:", error);
+        console.log("✅ role fetch:", {
+          roleRow,
+          roleErr,
+          clerkUserId: user.id,
+        });
+
+        if (roleErr || !roleRow?.role) {
+          console.log("❌ Cannot get role:", roleErr);
           router.replace("/login");
           return;
         }
 
-        const role = data.role;
+        const role = roleRow.role;
         await saveUserRole(role);
 
-        // 5️⃣ Redirect ตาม role
+        // 5) Redirect ตาม role
         const currentGroup = segments[0];
+        console.log("🚦 redirect check:", { role, currentGroup });
 
-        if (role === "admin" && currentGroup !== "admin") {
-          router.replace("/admin/dashboard");
-        } else if (role === "volunteer" && currentGroup !== "volunteer") {
-          router.replace("/volunteer");
-        } else if (
-          (role === "user" || role === "volunteer_pending") &&
-          currentGroup !== "(tabs)"
-        ) {
-          router.replace("/(tabs)/home");
+        if (role === "admin") {
+          router.replace(ADMIN_PATH);
+        } else if (role === "volunteer") {
+          if (currentGroup !== "volunteer") router.replace(VOLUNTEER_PATH);
+        } else {
+          if (currentGroup !== "(tabs)") router.replace(USER_HOME_PATH);
         }
+
+        // ✅ mark synced
+        lastSyncedUserIdRef.current = user.id;
       } catch (err) {
         console.error("❌ AuthWrapper error:", err);
       } finally {
+        syncingRef.current = false;
         setLoading(false);
       }
     };
 
     syncUserAndRedirect();
-  }, [isLoaded, isSignedIn, user]);
+  }, [isLoaded, isSignedIn, user?.id, segments?.[0]]); // ใส่ segments[0] ด้วยกัน edge case route state ค้าง
 
   if (loading) {
     return (

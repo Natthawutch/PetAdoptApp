@@ -69,7 +69,7 @@ function AdminTabsLayout() {
       <Tabs.Screen
         name="dashboard"
         options={{
-          title: "Dashboard",
+          title: "แดชบอร์ด",
           tabBarIcon: ({ color, focused }) => (
             <TabIcon
               name={focused ? "bar-chart" : "bar-chart-outline"}
@@ -83,7 +83,7 @@ function AdminTabsLayout() {
       <Tabs.Screen
         name="users"
         options={{
-          title: "Users",
+          title: "จัดการผู้ใช้",
           tabBarIcon: ({ color, focused }) => (
             <TabIcon
               name={focused ? "people" : "people-outline"}
@@ -97,7 +97,7 @@ function AdminTabsLayout() {
       <Tabs.Screen
         name="notifications"
         options={{
-          title: "Notifications",
+          title: "การแจ้งเตือน",
           tabBarIcon: ({ color, focused }) => (
             <TabIcon
               name={focused ? "notifications" : "notifications-outline"}
@@ -112,7 +112,7 @@ function AdminTabsLayout() {
       <Tabs.Screen
         name="verifications"
         options={{
-          title: "Verifications",
+          title: "จัดการคำขอยืนยันตัวตน",
           tabBarIcon: ({ color, focused }) => (
             <TabIcon
               name={focused ? "shield-checkmark" : "shield-checkmark-outline"}
@@ -126,7 +126,7 @@ function AdminTabsLayout() {
       <Tabs.Screen
         name="volunteers"
         options={{
-          title: "Volunteers",
+          title: "จัดการคำขออาสาสมัคร",
           tabBarIcon: ({ color, focused }) => (
             <TabIcon
               name={focused ? "people" : "people-outline"}
@@ -140,7 +140,7 @@ function AdminTabsLayout() {
       <Tabs.Screen
         name="adminprofile"
         options={{
-          title: "Profile",
+          title: "โปรไฟล์",
           tabBarIcon: ({ color, focused }) => (
             <TabIcon
               name={focused ? "person" : "person-outline"}

@@ -71,58 +71,63 @@ export default function PetInfo({ pet, isFavorite, onToggleFavorite }) {
         </TouchableOpacity>
       </View>
 
-      {/* ================= MEDIA ================= */}
-      <View
-        style={styles.imageContainer}
-        onLayout={(e) => setContainerWidth(e.nativeEvent.layout.width)}
-      >
-        {containerWidth > 0 && (
-          <ScrollView
-            horizontal
-            pagingEnabled
-            showsHorizontalScrollIndicator={false}
-            onScroll={(e) =>
-              setCurrentIndex(
-                Math.round(e.nativeEvent.contentOffset.x / containerWidth)
-              )
-            }
-          >
-            {mediaList.map((item, index) => (
-              <View key={index} style={{ width: containerWidth, height: 280 }}>
-                {item.type === "video" ? (
-                  <Video
-                    ref={videoRef}
-                    source={{ uri: item.uri }}
-                    style={styles.media}
-                    resizeMode="contain" 
-                    useNativeControls
-                    isLooping
-                  />
-                ) : (
-                  <Image
-                    source={{ uri: item.uri }}
-                    style={styles.media}
-                    resizeMode="contain"
-                  />
-                )}
-              </View>
-            ))}
-          </ScrollView>
-        )}
+      {/* ================= MEDIA (with purple spacing) ================= */}
+      <View style={styles.mediaSection}>
+        <View
+          style={styles.imageContainer}
+          onLayout={(e) => setContainerWidth(e.nativeEvent.layout.width)}
+        >
+          {containerWidth > 0 && (
+            <ScrollView
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              onScroll={(e) =>
+                setCurrentIndex(
+                  Math.round(e.nativeEvent.contentOffset.x / containerWidth),
+                )
+              }
+            >
+              {mediaList.map((item, index) => (
+                <View
+                  key={index}
+                  style={{ width: containerWidth, height: 280 }}
+                >
+                  {item.type === "video" ? (
+                    <Video
+                      ref={videoRef}
+                      source={{ uri: item.uri }}
+                      style={styles.media}
+                      resizeMode="contain"
+                      useNativeControls
+                      isLooping
+                    />
+                  ) : (
+                    <Image
+                      source={{ uri: item.uri }}
+                      style={styles.media}
+                      resizeMode="cover"
+                    />
+                  )}
+                </View>
+              ))}
+            </ScrollView>
+          )}
 
-        {mediaList.length > 1 && (
-          <View style={styles.indicators}>
-            {mediaList.map((_, i) => (
-              <View
-                key={i}
-                style={[
-                  styles.indicator,
-                  currentIndex === i && styles.activeIndicator,
-                ]}
-              />
-            ))}
-          </View>
-        )}
+          {mediaList.length > 1 && (
+            <View style={styles.indicators}>
+              {mediaList.map((_, i) => (
+                <View
+                  key={i}
+                  style={[
+                    styles.indicator,
+                    currentIndex === i && styles.activeIndicator,
+                  ]}
+                />
+              ))}
+            </View>
+          )}
+        </View>
       </View>
 
       {/* ================= ADDRESS ================= */}
@@ -145,6 +150,7 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
 
+  /* ===== Header ===== */
   header: {
     paddingTop: 15,
     paddingBottom: 14,
@@ -171,10 +177,18 @@ const styles = StyleSheet.create({
     fontFamily: "outfit-bold",
   },
 
+  /* ===== Media spacing (purple) ===== */
+  mediaSection: {
+    backgroundColor: Colors.PURPLE, // ต่อเนื่องจาก header
+  },
+
   imageContainer: {
     height: 280,
+
     backgroundColor: "#000",
+    overflow: "hidden",
   },
+
   media: {
     width: "100%",
     height: "100%",
@@ -198,6 +212,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
 
+  /* ===== Info ===== */
   infoContainer: {
     padding: 16,
   },

@@ -6,6 +6,8 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
+  Platform,
+  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -32,17 +34,16 @@ export default function PetDetails() {
   const { getToken } = useAuth();
 
   const [pet, setPet] = useState(null);
+  const [owner, setOwner] = useState(null);
   const [loading, setLoading] = useState(true);
   const [isFavorite, setIsFavorite] = useState(false);
 
-  // แยก loading ของปุ่มแชท
   const [chatLoading, setChatLoading] = useState(false);
-
   const [buttonScale] = useState(new Animated.Value(1));
 
   useEffect(() => {
     navigation.setOptions({ headerShown: false });
-    fetchPet();
+    fetchPetAndOwner();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
@@ -52,9 +53,39 @@ export default function PetDetails() {
   }, [user, pet]);
 
   /* =======================
-     Fetch pet
+     Fetch owner (token เพื่อผ่าน RLS)
   ======================= */
-  const fetchPet = async () => {
+  const fetchOwnerByClerkId = async (clerkId) => {
+    if (!clerkId) return null;
+
+    try {
+      const token = await getToken({ template: "supabase", skipCache: true });
+      if (!token) return null;
+
+      const supabaseAuth = createClerkSupabaseClient(token);
+
+      const { data, error } = await supabaseAuth
+        .from("users")
+        .select("clerk_id, full_name, avatar_url, email, phone")
+        .eq("clerk_id", clerkId)
+        .maybeSingle();
+
+      if (error) {
+        console.log("❌ fetchOwnerByClerkId error:", error);
+        return null;
+      }
+
+      return data || null;
+    } catch (e) {
+      console.log("❌ fetchOwnerByClerkId exception:", e);
+      return null;
+    }
+  };
+
+  /* =======================
+     Fetch pet + owner
+  ======================= */
+  const fetchPetAndOwner = async () => {
     setLoading(true);
 
     const { data, error } = await supabase
@@ -70,11 +101,15 @@ export default function PetDetails() {
     }
 
     setPet(data);
+
+    const ownerData = await fetchOwnerByClerkId(data?.user_id);
+    setOwner(ownerData);
+
     setLoading(false);
   };
 
   /* =======================
-     Favorite logic
+     Favorite
   ======================= */
   const checkFavorite = async () => {
     try {
@@ -187,7 +222,6 @@ export default function PetDetails() {
       Alert.alert("กรุณาเข้าสู่ระบบ");
       return;
     }
-
     if (!pet) return;
 
     if (user.id === pet.user_id) {
@@ -212,7 +246,6 @@ export default function PetDetails() {
       Alert.alert("กรุณาเข้าสู่ระบบ");
       return;
     }
-
     if (!pet) return;
 
     if (user.id === pet.user_id) {
@@ -234,15 +267,12 @@ export default function PetDetails() {
 
       const supabaseAuth = createClerkSupabaseClient(token);
 
-      // ✅ สำคัญ: ห้ามใช้ '_' มาสร้าง/แยก user id เพราะ Clerk id มี '_' อยู่แล้ว
       const ids = [user.id, pet.user_id].sort();
       const u1 = ids[0];
       const u2 = ids[1];
 
-      // ✅ ใช้ delimiter ที่ไม่ชน เช่น ':'
       const chatId = `${pet.id}:${u1}:${u2}`;
 
-      // เช็คว่ามีห้องแล้วไหม
       const { data: existingChat, error: chatErr } = await supabaseAuth
         .from("chats")
         .select("id")
@@ -256,7 +286,6 @@ export default function PetDetails() {
         return;
       }
 
-      // สร้างห้องใหม่
       const { error: insertErr } = await supabaseAuth.from("chats").insert({
         id: chatId,
         pet_id: pet.id,
@@ -280,13 +309,13 @@ export default function PetDetails() {
   const animateButton = () => {
     Animated.sequence([
       Animated.timing(buttonScale, {
-        toValue: 0.95,
-        duration: 100,
+        toValue: 0.96,
+        duration: 90,
         useNativeDriver: true,
       }),
       Animated.timing(buttonScale, {
         toValue: 1,
-        duration: 100,
+        duration: 90,
         useNativeDriver: true,
       }),
     ]).start();
@@ -294,7 +323,7 @@ export default function PetDetails() {
 
   if (loading || !pet) {
     return (
-      <View style={{ flex: 1, justifyContent: "center" }}>
+      <View style={styles.loadingWrap}>
         <ActivityIndicator size="large" color={Colors.PURPLE} />
       </View>
     );
@@ -303,66 +332,102 @@ export default function PetDetails() {
   const isAdopted = pet.adoption_status === "adopted";
 
   return (
-    <View style={styles.container}>
-      <ScrollView showsVerticalScrollIndicator={false}>
-        <PetInfo
-          pet={pet}
-          isFavorite={isFavorite}
-          onToggleFavorite={toggleFavorite}
-        />
-        <PetSubInfo pet={pet} />
-        <AboutPet pet={pet} />
-        <OwnerInfo pet={pet} onMessagePress={InitiateChat} />
-        <View style={{ height: 120 }} />
-      </ScrollView>
+    // ✅ ให้สีม่วง “เต็มด้านบน” + safe area
+    <SafeAreaView style={styles.safeArea}>
+      <View style={styles.page}>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.scrollContent}
+        >
+          <PetInfo
+            pet={pet}
+            isFavorite={isFavorite}
+            onToggleFavorite={toggleFavorite}
+          />
+          <PetSubInfo pet={pet} />
+          <AboutPet pet={pet} />
+          <OwnerInfo pet={pet} owner={owner} onMessagePress={InitiateChat} />
+        </ScrollView>
 
-      <View style={styles.bottomContainer}>
-        <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
-          <TouchableOpacity
-            style={[styles.adoptBtn, isAdopted && styles.adoptedBtn]}
-            onPress={() => {
-              animateButton();
-              openAdoptionRequest();
-            }}
-            disabled={isAdopted}
-          >
-            <LinearGradient
-              colors={isAdopted ? ["#999", "#666"] : [Colors.PURPLE, "#8B5FBF"]}
-              style={styles.gradientButton}
+        {/* ✅ Bottom bar แยกชัด ไม่ทับเนื้อหา */}
+        <View style={styles.bottomBar}>
+          <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
+            <TouchableOpacity
+              style={[styles.adoptBtn, isAdopted && styles.adoptedBtn]}
+              onPress={() => {
+                animateButton();
+                openAdoptionRequest();
+              }}
+              disabled={isAdopted}
+              activeOpacity={0.9}
             >
-              <Text style={styles.adoptBtnText}>
-                {isAdopted ? "ถูกรับเลี้ยงแล้ว 🐾" : "ส่งคำขอรับเลี้ยง"}
-              </Text>
-            </LinearGradient>
-          </TouchableOpacity>
+              <LinearGradient
+                colors={
+                  isAdopted
+                    ? ["#9CA3AF", "#6B7280"]
+                    : [Colors.PURPLE, "#8B5FBF"]
+                }
+                style={styles.gradientButton}
+              >
+                <Text style={styles.adoptBtnText}>
+                  {isAdopted ? "ถูกรับเลี้ยงแล้ว 🐾" : "ส่งคำขอรับเลี้ยง"}
+                </Text>
+              </LinearGradient>
+            </TouchableOpacity>
 
-          {chatLoading ? (
-            <View style={{ marginTop: 10, alignItems: "center" }}>
-              <ActivityIndicator color={Colors.PURPLE} />
-              <Text style={{ marginTop: 6, color: "#666" }}>
-                กำลังเริ่มแชท...
-              </Text>
-            </View>
-          ) : null}
-        </Animated.View>
+            {chatLoading ? (
+              <View style={{ marginTop: 10, alignItems: "center" }}>
+                <ActivityIndicator color={Colors.PURPLE} />
+                <Text style={{ marginTop: 6, color: "#666" }}>
+                  กำลังเริ่มแชท...
+                </Text>
+              </View>
+            ) : null}
+          </Animated.View>
+        </View>
       </View>
-    </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#fff", paddingTop: 25 },
-  bottomContainer: {
-    position: "absolute",
-    bottom: 20,
-    width: "100%",
-    paddingHorizontal: 20,
+  safeArea: {
+    flex: 1,
+    backgroundColor: Colors.PURPLE, // ✅ ทำให้ด้านบนเต็มเป็นสีม่วง
+    paddingTop: 25,
   },
+  page: {
+    flex: 1,
+    backgroundColor: "#fff",
+  },
+  loadingWrap: {
+    flex: 1,
+    justifyContent: "center",
+    backgroundColor: "#fff",
+  },
+  scrollContent: {
+    paddingBottom: 140, // ✅ กันปุ่มทับเนื้อหา (สูงกว่าปุ่มนิดนึง)
+  },
+
+  bottomBar: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: 20,
+    paddingBottom: Platform.OS === "ios" ? 18 : 14,
+    paddingTop: 10,
+    backgroundColor: "rgba(255,255,255,0.92)",
+    borderTopWidth: 1,
+    borderTopColor: "#F3F4F6",
+  },
+
   adoptBtn: { borderRadius: 30, overflow: "hidden" },
-  adoptedBtn: { opacity: 0.6 },
+  adoptedBtn: { opacity: 0.75 },
   gradientButton: {
     paddingVertical: 16,
     alignItems: "center",
+    borderRadius: 30,
   },
   adoptBtnText: {
     color: "#fff",

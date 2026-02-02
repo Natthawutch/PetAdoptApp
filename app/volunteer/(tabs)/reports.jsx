@@ -1,14 +1,7 @@
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
@@ -37,10 +30,21 @@ function toTime(v) {
   return Number.isFinite(t) ? t : 0;
 }
 
+function formatThaiDateTime(iso) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleString("th-TH", {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 /**
  * Upsert item into a list already sorted by created_at desc (newest first)
- * - If exists: remove old index, then insert at correct position (binary search)
- * - If new: insert at correct position
  */
 function upsertSortedByCreatedAtDesc(list, item) {
   const id = item?.id;
@@ -52,7 +56,6 @@ function upsertSortedByCreatedAtDesc(list, item) {
   let arr = list;
   const idx = arr.findIndex((x) => x.id === id);
   if (idx !== -1) {
-    // update data by merge
     const merged = { ...arr[idx], ...item };
     arr = [...arr.slice(0, idx), ...arr.slice(idx + 1)];
     item = merged;
@@ -64,13 +67,11 @@ function upsertSortedByCreatedAtDesc(list, item) {
   while (lo < hi) {
     const mid = (lo + hi) >> 1;
     const midTime = toTime(arr[mid]?.created_at);
-    // want desc => bigger time goes earlier
     if (createdAt > midTime) hi = mid;
     else lo = mid + 1;
   }
-  // insert
-  const next = [...arr.slice(0, lo), item, ...arr.slice(lo)];
-  return next;
+
+  return [...arr.slice(0, lo), item, ...arr.slice(lo)];
 }
 
 /* -------------------------- Header (memo) -------------------------- */
@@ -193,11 +194,10 @@ export default function VolunteerReports() {
   const { user } = useUser();
   const userId = user?.id;
 
-  // 🔥 เปลี่ยน: เก็บรายการเป็น array เดียวเหมือนเดิม แต่ update แบบไม่ sort ทั้งกอง
   const [reports, setReports] = useState([]);
 
   const [loading, setLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchQuery] = useState("");
   const [selectedFilter, setSelectedFilter] = useState("all");
   const [realtimeStatus, setRealtimeStatus] = useState("disconnected");
   const [newReportId, setNewReportId] = useState(null);
@@ -222,7 +222,6 @@ export default function VolunteerReports() {
   const retryAttemptRef = useRef(0);
   const retryTimerRef = useRef(null);
 
-  // ✅ batch realtime updates กันยิง setState ถี่
   const pendingOpsRef = useRef([]);
   const flushRafRef = useRef(null);
 
@@ -304,12 +303,11 @@ export default function VolunteerReports() {
             if (x.type === "remove") {
               const id = x.id;
               if (!id) continue;
-              if (next === prev) next = prev;
               next = next.filter((r) => r.id !== id);
             } else if (x.type === "upsert") {
               const row = x.row;
               if (!row?.id) continue;
-              // visibility gate
+
               if (!isVisibleToMe(row)) {
                 next = next.filter((r) => r.id !== row.id);
                 continue;
@@ -358,7 +356,6 @@ export default function VolunteerReports() {
         if (pendingRes.error) throw pendingRes.error;
         if (mineRes.error) throw mineRes.error;
 
-        // server already ordered desc; แค่ merge + upsert แบบแทรก (ไม่ sort ทั้งกอง)
         let merged = [];
         for (const r of [...(pendingRes.data || []), ...(mineRes.data || [])]) {
           merged = upsertSortedByCreatedAtDesc(merged, r);
@@ -449,7 +446,7 @@ export default function VolunteerReports() {
           config: { broadcast: { self: false } },
         });
 
-        // Listener 1: pending changes (show only unassigned)
+        // Listener 1: pending changes (unassigned only)
         channel.on(
           "postgres_changes",
           {
@@ -477,7 +474,6 @@ export default function VolunteerReports() {
                 setTimeout(() => setNewReportId(null), 2500);
               }
             } else {
-              // pending got assigned -> remove from public list
               enqueueOp({ type: "remove", id: newRow?.id });
             }
           },
@@ -502,7 +498,6 @@ export default function VolunteerReports() {
             }
 
             if (eventType === "UPDATE") {
-              // ✅ อ่าน prev ผ่าน setReports เพื่อกัน stale และไม่ต้องพึ่ง reports state
               setReports((prev) => {
                 const prevRow = prev.find((r) => r.id === newRow?.id);
                 if (
@@ -709,21 +704,6 @@ export default function VolunteerReports() {
     }
   };
 
-  const getTimeAgo = (dateString) => {
-    const now = new Date();
-    const past = new Date(dateString);
-    const diffMs = now - past;
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffMins < 1) return "เมื่อสักครู่";
-    if (diffMins < 60) return `${diffMins} นาทีที่แล้ว`;
-    if (diffHours < 24) return `${diffHours} ชั่วโมงที่แล้ว`;
-    if (diffDays < 7) return `${diffDays} วันที่แล้ว`;
-    return past.toLocaleDateString("th-TH");
-  };
-
   const filteredReports = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return reports.filter((report) => {
@@ -847,10 +827,13 @@ export default function VolunteerReports() {
             </Text>
           </View>
 
+          {/* ✅ แสดงวัน/เวลาแบบเต็ม */}
           <View style={styles.infoRow}>
             <View style={styles.infoItem}>
               <Ionicons name="time-outline" size={14} color="#94a3b8" />
-              <Text style={styles.infoText}>{getTimeAgo(item.created_at)}</Text>
+              <Text style={styles.infoText}>
+                {formatThaiDateTime(item.created_at)}
+              </Text>
             </View>
 
             {item.latitude && item.longitude && (
