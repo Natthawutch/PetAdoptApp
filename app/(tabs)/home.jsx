@@ -1,7 +1,7 @@
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   FlatList,
@@ -26,26 +26,14 @@ export default function Home() {
   const { getToken } = useAuth();
   const router = useRouter();
 
-  // =========================
-  // ✅ PAGINATION SETTINGS
-  // =========================
-  const PAGE_SIZE = 10;
-  const VISIBLE_ADOPTION_STATUS = "available";
-
-  // =========================
-  // ✅ PET LIST STATE
-  // =========================
   const [pets, setPets] = useState([]);
   const [filteredPets, setFilteredPets] = useState([]);
-
   const [loadingPets, setLoadingPets] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  const [page, setPage] = useState(0);
-  const [hasMore, setHasMore] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-
   const [showFilterModal, setShowFilterModal] = useState(false);
+
+  const VISIBLE_ADOPTION_STATUS = "available";
 
   const [filters, setFilters] = useState({
     category: "ทั้งหมด",
@@ -74,88 +62,66 @@ export default function Home() {
     "อื่นๆ",
   ];
 
-  const onEndReachedCalledDuringMomentum = useRef(false);
-
   const getAuthedSupabase = async () => {
     const token = await getToken({ template: "supabase" });
     if (!token) throw new Error("Missing Clerk token (template: supabase)");
     return createClerkSupabaseClient(token);
   };
 
+  // ✅ ตัวกรองหลักของ feed (รวม post_status)
   const isVisiblePet = (p) => {
+    // ✅ ถ้าแอดมินซ่อน -> ไม่แสดง
+    const ps = (p?.post_status ?? "").toString().trim().toLowerCase();
+    if (ps === "hidden") return false;
+
     const st = (p?.adoption_status ?? "").toString().trim().toLowerCase();
     if (st !== VISIBLE_ADOPTION_STATUS) return false;
+
     if (p?.adopted === true) return false;
+
     return true;
   };
 
-  // =========================
-  // ✅ FETCH PETS (PAGINATION)
-  // =========================
-  const fetchPets = async ({ reset = false } = {}) => {
-    // guard
-    if (!reset) {
-      if (loadingMore || !hasMore) return;
-      if (loadingPets || refreshing) return;
-    }
-
+  const fetchPets = async () => {
+    setLoadingPets(true);
     try {
-      if (reset) {
-        setLoadingPets(true);
-        setHasMore(true);
-        setPage(0);
-      } else {
-        setLoadingMore(true);
-      }
-
-      const currentPage = reset ? 0 : page;
-      const from = currentPage * PAGE_SIZE;
-      const to = from + PAGE_SIZE - 1;
-
-      // ✅ ตัดโพสต์ตัวเองตั้งแต่ query (ลดปัญหาได้มาไม่ครบ PAGE_SIZE)
-      let q = supabase
+      /**
+       * ✅ สำคัญ: อย่ากรอง post_status ใน query (กันหายหมด)
+       * แล้วไปกรอง "hidden" ที่ isVisiblePet() แทน
+       */
+      const { data, error } = await supabase
         .from("pets")
         .select("*")
         .eq("adoption_status", "available")
         .neq("adopted", true)
-        .order("created_at", { ascending: false })
-        .range(from, to);
+        .order("created_at", { ascending: false });
 
-      if (user?.id) q = q.neq("user_id", user.id);
-
-      const { data, error } = await q;
       if (error) throw error;
 
-      // ✅ สำคัญ: เช็ค hasMore จาก data ก่อนกรอง (กันเคสเหลือ 9 แล้วหยุด)
-      if ((data || []).length < PAGE_SIZE) setHasMore(false);
+      const myClerkId = (user?.id ?? "").toString().trim();
 
-      // ✅ กรองเพิ่มเฉพาะ visible (ปลอดภัยไว้ก่อน)
-      const petsData = (data || []).filter(isVisiblePet);
-
-      // ✅ อัปเดต pets + categories แบบชัวร์ (ใช้ prev)
-      setPets((prev) => {
-        const next = reset ? petsData : [...prev, ...petsData];
-
-        const categories = [
-          "ทั้งหมด",
-          ...new Set(next.map((p) => p.category).filter(Boolean)),
-        ];
-        setAvailableCategories(categories);
-
-        return next;
+      // ✅ กรองเฉพาะที่ควรเห็น + ไม่ใช่โพสต์ตัวเอง
+      const petsData = (data || []).filter(isVisiblePet).filter((p) => {
+        const ownerId = (p?.user_id ?? "").toString().trim();
+        if (!myClerkId) return true;
+        return ownerId !== myClerkId;
       });
 
-      setPage((prev) => (reset ? 1 : prev + 1));
+      setPets(petsData);
+
+      const categories = [
+        "ทั้งหมด",
+        ...new Set(petsData.map((p) => p.category).filter(Boolean)),
+      ];
+      setAvailableCategories(categories);
     } catch (error) {
       console.error("Error fetching pets:", error);
     } finally {
       setLoadingPets(false);
-      setLoadingMore(false);
       setRefreshing(false);
     }
   };
 
-  // ✅ availableBreeds computed based on selected category from LOADED pets
   const availableBreeds = useMemo(() => {
     const base =
       filters.category === "ทั้งหมด"
@@ -187,15 +153,56 @@ export default function Home() {
   };
 
   // =========================
-  // ✅ REALTIME (optional)
+  // ✅ REALTIME: ถ้า post_status กลายเป็น hidden ให้หายทันที
   // =========================
   useEffect(() => {
     const channel = supabase
       .channel("pets-realtime")
       .on(
         "postgres_changes",
-        { event: "INSERT", schema: "public", table: "pets" },
-        () => fetchPets({ reset: true }),
+        { event: "*", schema: "public", table: "pets" },
+        (payload) => {
+          try {
+            if (payload.eventType === "UPDATE") {
+              const newRow = payload.new;
+
+              const ps = (newRow?.post_status ?? "")
+                .toString()
+                .trim()
+                .toLowerCase();
+
+              // ✅ โดนซ่อน -> ลบทันที
+              if (ps === "hidden") {
+                setPets((prev) => prev.filter((p) => p.id !== newRow.id));
+                return;
+              }
+
+              // ✅ ไม่ซ่อน -> อัปเดตในรายการ
+              setPets((prev) => {
+                const idx = prev.findIndex((p) => p.id === newRow.id);
+                if (idx === -1) return prev;
+                const copy = [...prev];
+                copy[idx] = { ...copy[idx], ...newRow };
+                return copy;
+              });
+
+              return;
+            }
+
+            if (payload.eventType === "DELETE") {
+              const oldRow = payload.old;
+              setPets((prev) => prev.filter((p) => p.id !== oldRow?.id));
+              return;
+            }
+
+            if (payload.eventType === "INSERT") {
+              fetchPets();
+              return;
+            }
+          } catch (e) {
+            console.log("realtime handler error:", e);
+          }
+        },
       )
       .subscribe();
 
@@ -205,25 +212,22 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // initial load
   useEffect(() => {
-    fetchPets({ reset: true });
+    fetchPets();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ensure hide my posts when user.id becomes available
+  // ✅ user.id มาแล้ว รีเฟรชเพื่อซ่อนโพสต์ตัวเอง
   useEffect(() => {
-    if (user?.id) fetchPets({ reset: true });
+    if (user?.id) fetchPets();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
-  // apply filters when data or filters change
   useEffect(() => {
     applyFilters();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters, pets]);
 
-  // if category changed and breed no longer available => reset breed
   useEffect(() => {
     if (
       filters.breed !== "ทั้งหมด" &&
@@ -236,7 +240,7 @@ export default function Home() {
 
   const handleRefresh = () => {
     setRefreshing(true);
-    fetchPets({ reset: true });
+    fetchPets();
   };
 
   const handlePetPress = (pet) => {
@@ -486,17 +490,6 @@ export default function Home() {
     );
   };
 
-  const FooterLoading = () => {
-    if (!loadingMore) return null;
-    return (
-      <View style={{ paddingVertical: 20, alignItems: "center" }}>
-        <Text style={{ color: "#9CA3AF", fontWeight: "700" }}>
-          กำลังโหลดเพิ่ม...
-        </Text>
-      </View>
-    );
-  };
-
   return (
     <SafeAreaView style={styles.screen}>
       <Header />
@@ -520,7 +513,6 @@ export default function Home() {
         contentContainerStyle={styles.listContainer}
         refreshing={refreshing}
         onRefresh={handleRefresh}
-        showsVerticalScrollIndicator={false}
         ListEmptyComponent={
           !loadingPets && (
             <View style={styles.emptyBox}>
@@ -529,21 +521,11 @@ export default function Home() {
             </View>
           )
         }
-        // ✅ Pagination
-        onEndReachedThreshold={0.5}
-        onEndReached={() => {
-          if (onEndReachedCalledDuringMomentum.current) return;
-          onEndReachedCalledDuringMomentum.current = true;
-          fetchPets({ reset: false });
-        }}
-        onMomentumScrollBegin={() => {
-          onEndReachedCalledDuringMomentum.current = false;
-        }}
-        ListFooterComponent={<FooterLoading />}
+        showsVerticalScrollIndicator={false}
       />
 
       {/* Filter Modal */}
-      <Modal visible={showFilterModal} animationType="slide" transparent={true}>
+      <Modal visible={showFilterModal} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
@@ -659,8 +641,8 @@ export default function Home() {
         </View>
       </Modal>
 
-      {/* ✅ Report Modal */}
-      <Modal visible={showReportModal} animationType="slide" transparent={true}>
+      {/* Report Modal */}
+      <Modal visible={showReportModal} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>

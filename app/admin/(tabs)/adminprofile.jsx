@@ -18,15 +18,15 @@ import {
   createClerkSupabaseClient,
   resetRealtimeClient,
 } from "../../../config/supabaseClient";
-import { fetchDashboardStats } from "../../../lib/dashboardApi";
 import { clearAdminStatus } from "../../../utils/adminStorage";
 
 const RESET_STATS = {
-  totalUsers: null,
-  volunteers: null,
-  pendingApprovals: null,
-  animalsLookingForHome: null,
-  adoptionsSuccess: null,
+  totalPosts: null,
+  activePosts: null,
+  reportedPosts: null, // ✅ "รายงานโพสต์ทั้งหมด" (นับจาก user_reports)
+  totalReports: null, // ✅ "รายงานเคสช่วยเหลือทั้งหมด" (นับจาก reports)
+  todayActivity: null,
+  weekActivity: null,
 };
 
 const safeText = (v, fallback = "-") =>
@@ -128,15 +128,78 @@ export default function AdminProfile() {
           return profile;
         };
 
-        const [profile, dashboardStats] = await Promise.all([
+        // ✅ สถิติ Admin
+        const fetchAdminStats = async () => {
+          try {
+            // 1) นับโพสต์ทั้งหมด
+            const { count: totalPosts, error: totalPostsErr } = await supabase
+              .from("pets")
+              .select("*", { count: "exact", head: true });
+            if (totalPostsErr) throw totalPostsErr;
+
+            // 2) นับโพสต์ที่ยัง Available
+            const { count: activePosts, error: activePostsErr } = await supabase
+              .from("pets")
+              .select("*", { count: "exact", head: true })
+              .eq("post_status", "Available");
+            if (activePostsErr) throw activePostsErr;
+
+            // ✅ 3) นับ "รายงานโพสต์ทั้งหมด" = จำนวนแถวใน user_reports
+            const { count: reportedPosts, error: reportedPostsErr } =
+              await supabase
+                .from("user_reports")
+                .select("*", { count: "exact", head: true });
+            if (reportedPostsErr) throw reportedPostsErr;
+
+            // 4) นับ "รายงานเคสช่วยเหลือทั้งหมด" = จำนวนแถวใน reports
+            const { count: totalReports, error: totalReportsErr } =
+              await supabase
+                .from("reports")
+                .select("*", { count: "exact", head: true });
+            if (totalReportsErr) throw totalReportsErr;
+
+            // 5) กิจกรรมวันนี้ (โพสต์ที่สร้างวันนี้)
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const { count: todayActivity, error: todayErr } = await supabase
+              .from("pets")
+              .select("*", { count: "exact", head: true })
+              .gte("created_at", today.toISOString());
+            if (todayErr) throw todayErr;
+
+            // 6) กิจกรรม 7 วันที่แล้ว
+            const weekAgo = new Date();
+            weekAgo.setDate(weekAgo.getDate() - 7);
+            weekAgo.setHours(0, 0, 0, 0);
+            const { count: weekActivity, error: weekErr } = await supabase
+              .from("pets")
+              .select("*", { count: "exact", head: true })
+              .gte("created_at", weekAgo.toISOString());
+            if (weekErr) throw weekErr;
+
+            return {
+              totalPosts: totalPosts ?? 0,
+              activePosts: activePosts ?? 0,
+              reportedPosts: reportedPosts ?? 0, // ✅ ถูกแล้ว
+              totalReports: totalReports ?? 0,
+              todayActivity: todayActivity ?? 0,
+              weekActivity: weekActivity ?? 0,
+            };
+          } catch (error) {
+            console.error("❌ Error fetching admin stats:", error);
+            return RESET_STATS;
+          }
+        };
+
+        const [profile, adminStats] = await Promise.all([
           fetchProfile(),
-          fetchDashboardStats(token),
+          fetchAdminStats(),
         ]);
 
         if (!alive) return;
 
         setDbUser(profile);
-        setStats(dashboardStats || RESET_STATS);
+        setStats(adminStats || RESET_STATS);
 
         const role = String(profile?.role || "admin").toLowerCase();
         if (profile && role !== "admin" && role !== "superadmin") {
@@ -164,38 +227,34 @@ export default function AdminProfile() {
   const quickStats = useMemo(
     () => [
       {
-        label: "ผู้ใช้ทั้งหมด",
-        value: stats.totalUsers == null ? "—" : String(stats.totalUsers),
-        icon: "people",
+        label: "โพสต์สัตว์เลี้ยงทั้งหมด",
+        value: stats.totalPosts == null ? "—" : String(stats.totalPosts),
+        icon: "document-text",
+        color: "#6366f1",
       },
       {
-        label: "ผู้ใช้ที่ยังไม่ได้ยืนยันตัวตน",
-        value:
-          stats.pendingApprovals == null ? "—" : String(stats.pendingApprovals),
+        label: "สัตว์เลี้ยงที่ยังต้องการผู้รับเลี้ยง",
+        value: stats.activePosts == null ? "—" : String(stats.activePosts),
+        icon: "checkmark-circle",
+        color: "#10b981",
+      },
+      {
+        label: "รายงานโพสต์ทั้งหมด",
+        value: stats.reportedPosts == null ? "—" : String(stats.reportedPosts),
+        icon: "warning",
+        color: "#f59e0b",
+      },
+      {
+        label: "รายงานเคสช่วยเหลือทั้งหมด",
+        value: stats.totalReports == null ? "—" : String(stats.totalReports),
         icon: "alert-circle",
-      },
-      {
-        label: "อาสาสมัคร",
-        value: stats.volunteers == null ? "—" : String(stats.volunteers),
-        icon: "hand-left",
-      },
-      {
-        label: "ได้รับการอุปการะแล้ว",
-        value:
-          stats.adoptionsSuccess == null ? "—" : String(stats.adoptionsSuccess),
-        icon: "heart",
+        color: "#ef4444",
       },
     ],
     [stats],
   );
 
   const adminActions = [
-    {
-      label: "จัดการการผู้ใช้",
-      icon: "people-outline",
-      color: "#6366f1",
-      onPress: () => router.push("/admin/users"),
-    },
     {
       label: "รายงานโพสต์",
       icon: "document-text-outline",
@@ -264,6 +323,7 @@ export default function AdminProfile() {
   return (
     <View style={styles.container}>
       <ScrollView showsVerticalScrollIndicator={false}>
+        {/* Profile Card */}
         <View style={styles.profileCard}>
           <View style={styles.avatarContainer}>
             <View style={styles.avatar}>
@@ -285,22 +345,12 @@ export default function AdminProfile() {
             <Text style={styles.name}>{merged.fullName}</Text>
 
             <View style={styles.row}>
-              <Ionicons name="mail-outline" size={14} color="#64748b" />
-              <Text style={styles.mutedText}>{merged.email}</Text>
-            </View>
-
-            <View style={styles.row}>
               <Ionicons name="person-outline" size={14} color="#64748b" />
               <Text style={styles.mutedText}>{merged.role}</Text>
             </View>
 
             <View style={styles.row}>
-              <Ionicons name="call-outline" size={14} color="#64748b" />
-              <Text style={styles.mutedText}>{merged.phone}</Text>
-            </View>
-
-            <View style={styles.row}>
-              <Ionicons name="alert-circle-outline" size={14} color="#64748b" />
+              <Ionicons name="shield-outline" size={14} color="#64748b" />
               <Text style={styles.mutedText}>{merged.verificationStatus}</Text>
             </View>
           </View>
@@ -318,13 +368,19 @@ export default function AdminProfile() {
           </View>
         )}
 
+        {/* Stats Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>สถิติด่วน</Text>
+          <Text style={styles.sectionTitle}>สถิติการจัดการ</Text>
           <View style={styles.statsGridWrap}>
             {quickStats.map((stat, idx) => (
               <View key={idx} style={styles.statCardHalf}>
-                <View style={styles.statIcon}>
-                  <Ionicons name={stat.icon} size={20} color="#6366f1" />
+                <View
+                  style={[
+                    styles.statIcon,
+                    { backgroundColor: `${stat.color}15` },
+                  ]}
+                >
+                  <Ionicons name={stat.icon} size={20} color={stat.color} />
                 </View>
                 <Text style={styles.statValue}>{stat.value}</Text>
                 <Text style={styles.statLabel}>{stat.label}</Text>
@@ -333,6 +389,7 @@ export default function AdminProfile() {
           </View>
         </View>
 
+        {/* Admin Tools */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>เครื่องมือผู้ดูแลระบบ</Text>
           <View style={styles.toolsGrid}>
@@ -359,6 +416,7 @@ export default function AdminProfile() {
           </View>
         </View>
 
+        {/* Logout Button */}
         <View style={styles.section}>
           <Pressable
             onPress={handleLogout}
@@ -466,7 +524,6 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: "#eef2ff",
     justifyContent: "center",
     alignItems: "center",
     marginBottom: 8,
@@ -477,14 +534,20 @@ const styles = StyleSheet.create({
     color: "#1e293b",
     marginBottom: 2,
   },
-  statLabel: { fontSize: 11, color: "#64748b", fontWeight: "600" },
+  statLabel: {
+    fontSize: 11,
+    color: "#64748b",
+    fontWeight: "600",
+    textAlign: "center",
+  },
 
   toolsGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
   toolCard: {
-    width: "48%",
+    width: "100%",
     backgroundColor: "#fff",
     padding: 20,
     borderRadius: 16,
+    flexDirection: "row",
     alignItems: "center",
     shadowColor: "#000",
     shadowOffset: { width: 0, height: 1 },
@@ -499,9 +562,9 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     justifyContent: "center",
     alignItems: "center",
-    marginBottom: 12,
+    marginRight: 16,
   },
-  toolLabel: { fontSize: 14, fontWeight: "600", color: "#334155" },
+  toolLabel: { fontSize: 16, fontWeight: "600", color: "#334155", flex: 1 },
 
   logoutButton: {
     backgroundColor: "#fff",

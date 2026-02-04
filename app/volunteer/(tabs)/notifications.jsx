@@ -1,10 +1,18 @@
+// app/volunteer/(tabs)/notifications.jsx
+// ✅ รวม "notifications" + "adoption_requests" ให้แสดงใน NotificationCard เดียวกัน
+// ✅ NotificationCard รองรับทั้ง 2 แบบ + กดเข้า request detail ได้
+// ✅ ไม่แสดงสถานะเชื่อมต่อ (ไม่มี status UI)
+
 import { useAuth, useUser } from "@clerk/clerk-expo";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { LinearGradient } from "expo-linear-gradient";
+import { useRouter } from "expo-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
   Dimensions,
   FlatList,
+  Image,
   Platform,
   RefreshControl,
   StyleSheet,
@@ -19,7 +27,58 @@ import {
 
 const { width } = Dimensions.get("window");
 
-// ✨ Animated Notification Card Component
+/* ================= HELPERS ================= */
+const formatTimeAgo = (timestamp) => {
+  const now = new Date();
+  const time = new Date(timestamp);
+  const diffMs = now - time;
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffMins < 1) return "เมื่อสักครู่";
+  if (diffMins < 60) return `${diffMins} นาทีที่แล้ว`;
+  if (diffHours < 24) return `${diffHours} ชั่วโมงที่แล้ว`;
+  if (diffDays < 7) return `${diffDays} วันที่แล้ว`;
+  return time.toLocaleDateString("th-TH", {
+    day: "numeric",
+    month: "short",
+    year: diffDays > 365 ? "numeric" : undefined,
+  });
+};
+
+const getTypeIcon = (title = "") => {
+  if (title.includes("อนุมัติ") || title.includes("ยืนยัน"))
+    return { icon: "✅", color: "#34C759" };
+  if (title.includes("ปฏิเสธ") || title.includes("ยกเลิก"))
+    return { icon: "❌", color: "#FF3B30" };
+  if (title.includes("รอ") || title.includes("พิจารณา"))
+    return { icon: "⏳", color: "#FF9500" };
+  if (title.includes("ข้อความ") || title.includes("แจ้ง"))
+    return { icon: "💬", color: "#007AFF" };
+  return { icon: "🔔", color: "#5856D6" };
+};
+
+const getEmojiByCategory = (cat) => {
+  if (!cat) return "🐾";
+  const lower = String(cat).toLowerCase();
+  if (lower.includes("สุนัข") || lower.includes("dog")) return "🐶";
+  if (lower.includes("แมว") || lower.includes("cat")) return "🐱";
+  return "🐾";
+};
+
+const REQUEST_STATUS_TEXT = {
+  pending: "รอดำเนินการ",
+  approved: "อนุมัติแล้ว",
+  rejected: "ปฏิเสธแล้ว",
+};
+const REQUEST_STATUS_COLOR = {
+  pending: "#FF9500",
+  approved: "#34C759",
+  rejected: "#FF3B30",
+};
+
+/* ================= NotificationCard (รองรับ 2 แบบ) ================= */
 const NotificationCard = ({ item, onPress, onLongPress }) => {
   const slideAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(1)).current;
@@ -31,7 +90,7 @@ const NotificationCard = ({ item, onPress, onLongPress }) => {
       tension: 50,
       friction: 7,
     }).start();
-  }, []);
+  }, [slideAnim]);
 
   const handlePressIn = () => {
     Animated.spring(scaleAnim, {
@@ -39,27 +98,23 @@ const NotificationCard = ({ item, onPress, onLongPress }) => {
       useNativeDriver: true,
     }).start();
   };
-
   const handlePressOut = () => {
-    Animated.spring(scaleAnim, {
-      toValue: 1,
-      useNativeDriver: true,
-    }).start();
+    Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true }).start();
   };
 
-  const getTypeIcon = (title) => {
-    if (title.includes("อนุมัติ") || title.includes("ยืนยัน"))
-      return { icon: "✅", color: "#34C759" };
-    if (title.includes("ปฏิเสธ") || title.includes("ยกเลิก"))
-      return { icon: "❌", color: "#FF3B30" };
-    if (title.includes("รอ") || title.includes("พิจารณา"))
-      return { icon: "⏳", color: "#FF9500" };
-    if (title.includes("ข้อความ") || title.includes("แจ้ง"))
-      return { icon: "💬", color: "#007AFF" };
-    return { icon: "🔔", color: "#5856D6" };
-  };
+  const isRequest = item?.__type === "request";
 
-  const typeInfo = getTypeIcon(item.title);
+  const createdAt = item.created_at;
+
+  const title = isRequest ? item.title : item.title;
+  const description = isRequest ? item.description : item.description;
+
+  const accentColor = isRequest
+    ? item.accentColor
+    : getTypeIcon(item.title).color;
+  const iconEmoji = isRequest ? item.icon : getTypeIcon(item.title).icon;
+
+  const unread = !isRequest && !!item.unread;
 
   return (
     <Animated.View
@@ -83,46 +138,70 @@ const NotificationCard = ({ item, onPress, onLongPress }) => {
         onPressOut={handlePressOut}
         activeOpacity={1}
       >
-        <View style={[styles.card, item.unread && styles.unreadCard]}>
-          {/* Left Accent Bar */}
-          {item.unread && (
+        <View style={[styles.card, unread && styles.unreadCard]}>
+          {/* accent bar เฉพาะ notification ที่ unread */}
+          {unread && (
             <View
-              style={[styles.accentBar, { backgroundColor: typeInfo.color }]}
+              style={[styles.accentBar, { backgroundColor: accentColor }]}
             />
           )}
 
           <View style={styles.cardContent}>
-            {/* Icon Circle */}
-            <View
-              style={[
-                styles.iconCircle,
-                { backgroundColor: `${typeInfo.color}15` },
-              ]}
-            >
-              <Text style={styles.iconText}>{typeInfo.icon}</Text>
-            </View>
+            {/* LEFT: request = pet avatar, notification = icon circle */}
+            {isRequest ? (
+              item.petImage ? (
+                <Image
+                  source={{ uri: item.petImage }}
+                  style={styles.petAvatar}
+                  resizeMode="cover"
+                />
+              ) : (
+                <LinearGradient
+                  colors={["#667eea", "#764ba2"]}
+                  style={styles.petAvatar}
+                >
+                  <Text style={styles.petEmoji}>
+                    {getEmojiByCategory(item.petCategory)}
+                  </Text>
+                </LinearGradient>
+              )
+            ) : (
+              <View
+                style={[
+                  styles.iconCircle,
+                  { backgroundColor: `${accentColor}15` },
+                ]}
+              >
+                <Text style={styles.iconText}>{iconEmoji}</Text>
+              </View>
+            )}
 
-            {/* Content */}
             <View style={styles.textContainer}>
               <View style={styles.titleRow}>
                 <Text
-                  style={[styles.title, item.unread && styles.unreadTitle]}
+                  style={[styles.title, unread && styles.unreadTitle]}
                   numberOfLines={2}
                 >
-                  {item.title}
+                  {title}
                 </Text>
-                {item.unread && <View style={styles.unreadDot} />}
+                {unread && <View style={styles.unreadDot} />}
               </View>
 
-              <Text style={styles.description} numberOfLines={2}>
-                {item.description}
+              <Text
+                style={[
+                  styles.description,
+                  isRequest && { color: accentColor, fontWeight: "600" },
+                ]}
+                numberOfLines={2}
+              >
+                {description}
               </Text>
 
               <View style={styles.footer}>
-                <Text style={styles.timestamp}>
-                  {formatTimeAgo(item.created_at)}
-                </Text>
-                <Text style={styles.longPressHint}>กดค้างเพื่อลบ</Text>
+                <Text style={styles.timestamp}>{formatTimeAgo(createdAt)}</Text>
+                {!isRequest && (
+                  <Text style={styles.longPressHint}>กดค้างเพื่อลบ</Text>
+                )}
               </View>
             </View>
           </View>
@@ -132,44 +211,48 @@ const NotificationCard = ({ item, onPress, onLongPress }) => {
   );
 };
 
-// ⏰ Time formatting helper
-const formatTimeAgo = (timestamp) => {
-  const now = new Date();
-  const time = new Date(timestamp);
-  const diffMs = now - time;
-  const diffMins = Math.floor(diffMs / 60000);
-  const diffHours = Math.floor(diffMs / 3600000);
-  const diffDays = Math.floor(diffMs / 86400000);
-
-  if (diffMins < 1) return "เมื่อสักครู่";
-  if (diffMins < 60) return `${diffMins} นาทีที่แล้ว`;
-  if (diffHours < 24) return `${diffHours} ชั่วโมงที่แล้ว`;
-  if (diffDays < 7) return `${diffDays} วันที่แล้ว`;
-  return time.toLocaleDateString("th-TH", {
-    day: "numeric",
-    month: "short",
-    year: diffDays > 365 ? "numeric" : undefined,
-  });
-};
-
 export default function VolunteerNotifications() {
+  const router = useRouter();
   const { user, isLoaded } = useUser();
   const { getToken } = useAuth();
 
   const [notifications, setNotifications] = useState([]);
+  const [requests, setRequests] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [status, setStatus] = useState("DISCONNECTED");
   const [unreadCount, setUnreadCount] = useState(0);
+
+  // supabase user (uuid) สำหรับ notifications table
   const [supabaseUserId, setSupabaseUserId] = useState(null);
 
   const supabaseRef = useRef(null);
   const realtimeRef = useRef(null);
-  const channelRef = useRef(null);
+
+  const notifChannelRef = useRef(null);
+  const reqChannelRef = useRef(null);
+
   const lastLoadRef = useRef(0);
   const isMountedRef = useRef(true);
 
-  /* ================= FETCH SUPABASE USER ID (RUN ONCE) ================= */
+  const subscribeRunIdRef = useRef(0);
+
+  /* ================= GET “FRESH” SUPABASE CLIENT ================= */
+  const getSupabase = useCallback(async () => {
+    const token = await getToken({ template: "supabase" });
+    const supabase = createClerkSupabaseClient(token);
+    supabaseRef.current = supabase;
+    return supabase;
+  }, [getToken]);
+
+  /* ================= GET “FRESH” REALTIME CLIENT ================= */
+  const getRealtime = useCallback(async () => {
+    const token = await getToken({ template: "supabase" });
+    const realtime = getRealtimeClient(token); // realtime object
+    realtimeRef.current = realtime;
+    return realtime;
+  }, [getToken]);
+
+  /* ================= FETCH SUPABASE USER ID (uuid) ================= */
   useEffect(() => {
     if (!isLoaded || !user?.id) return;
 
@@ -177,10 +260,8 @@ export default function VolunteerNotifications() {
 
     (async () => {
       try {
-        const token = await getToken({ template: "supabase" });
+        const supabase = await getSupabase();
         if (cancelled) return;
-
-        const supabase = createClerkSupabaseClient(token);
 
         const { data, error } = await supabase
           .from("users")
@@ -188,84 +269,176 @@ export default function VolunteerNotifications() {
           .eq("clerk_id", user.id)
           .single();
 
-        if (error || cancelled) {
+        if (cancelled) return;
+
+        if (error) {
           console.error("❌ Fetch user id error:", error);
           return;
         }
 
-        console.log("✅ Supabase user ID:", data.id);
-        setSupabaseUserId(data.id);
-      } catch (error) {
-        if (!cancelled) {
-          console.error("❌ Exception in fetch user id:", error);
+        if (!data?.id) {
+          console.error("❌ Fetch user id: no data");
+          return;
         }
+
+        setSupabaseUserId((prev) => (prev === data.id ? prev : data.id));
+      } catch (e) {
+        if (!cancelled) console.error("❌ Exception in fetch user id:", e);
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [isLoaded, user?.id]);
+  }, [isLoaded, user?.id, getSupabase]);
 
-  /* ================= LOAD NOTIFICATIONS ================= */
+  /* ================= LOAD NOTIFICATIONS TABLE ================= */
   const loadNotifications = useCallback(async () => {
-    if (!supabaseUserId || !supabaseRef.current) return;
+    if (!supabaseUserId) return;
 
     const now = Date.now();
-    if (now - lastLoadRef.current < 800) {
-      console.log("⏭️ Skipping load (too frequent)");
-      return;
-    }
+    if (now - lastLoadRef.current < 600) return;
     lastLoadRef.current = now;
 
     try {
-      console.log("📥 Loading notifications...");
-      const { data, error } = await supabaseRef.current
+      const supabase = await getSupabase();
+
+      const { data, error } = await supabase
         .from("notifications")
         .select("*")
         .eq("user_id", supabaseUserId)
         .order("created_at", { ascending: false });
 
       if (error) {
+        if (String(error?.message || "").includes("JWT expired")) {
+          const supabase2 = await getSupabase();
+          const retry = await supabase2
+            .from("notifications")
+            .select("*")
+            .eq("user_id", supabaseUserId)
+            .order("created_at", { ascending: false });
+
+          if (retry.error) {
+            console.error("❌ Load notifications retry error:", retry.error);
+            return;
+          }
+
+          if (!isMountedRef.current) return;
+          setNotifications(retry.data || []);
+          setUnreadCount((retry.data || []).filter((n) => n.unread).length);
+          return;
+        }
+
         console.error("❌ Load notifications error:", error);
         return;
       }
 
       if (!isMountedRef.current) return;
 
-      console.log(`✅ Loaded ${data.length} notifications`);
-      setNotifications(data);
-      setUnreadCount(data.filter((n) => n.unread).length);
-      setLoading(false);
-    } catch (error) {
-      console.error("❌ Exception in loadNotifications:", error);
-      setLoading(false);
+      setNotifications(data || []);
+      setUnreadCount((data || []).filter((n) => n.unread).length);
+    } catch (e) {
+      console.error("❌ Exception in loadNotifications:", e);
     }
-  }, [supabaseUserId]);
+  }, [supabaseUserId, getSupabase]);
 
-  /* ================= INIT SUPABASE + REALTIME (RUN ONCE) ================= */
+  /* ================= LOAD ADOPTION REQUESTS (owner_id = Clerk user.id) ================= */
+  const loadRequests = useCallback(async () => {
+    if (!user?.id) return;
+
+    try {
+      const supabase = await getSupabase();
+
+      const { data, error } = await supabase
+        .from("adoption_requests")
+        .select(
+          `
+          id,
+          status,
+          created_at,
+          pets (
+            name,
+            image_url,
+            category
+          )
+        `,
+        )
+        .eq("owner_id", user.id)
+        .order("created_at", { ascending: false });
+
+      if (error) {
+        if (String(error?.message || "").includes("JWT expired")) {
+          const supabase2 = await getSupabase();
+          const retry = await supabase2
+            .from("adoption_requests")
+            .select(
+              `
+              id,
+              status,
+              created_at,
+              pets (
+                name,
+                image_url,
+                category
+              )
+            `,
+            )
+            .eq("owner_id", user.id)
+            .order("created_at", { ascending: false });
+
+          if (retry.error) {
+            console.error("❌ Load requests retry error:", retry.error);
+            return;
+          }
+
+          if (!isMountedRef.current) return;
+          setRequests(retry.data || []);
+          return;
+        }
+
+        console.error("❌ Load requests error:", error);
+        return;
+      }
+
+      if (!isMountedRef.current) return;
+      setRequests(data || []);
+    } catch (e) {
+      console.error("❌ Exception in loadRequests:", e);
+    }
+  }, [user?.id, getSupabase]);
+
+  /* ================= INIT REALTIME (2 CHANNELS) ================= */
   useEffect(() => {
-    if (!supabaseUserId) return;
+    if (!supabaseUserId || !user?.id) return;
 
     let mounted = true;
-    let channel = null;
+    const runId = ++subscribeRunIdRef.current;
 
     (async () => {
       try {
-        const token = await getToken({ template: "supabase" });
-        if (!mounted) return;
+        // initial loads
+        await Promise.all([loadNotifications(), loadRequests()]);
+        if (!mounted || runId !== subscribeRunIdRef.current) return;
 
-        console.log("🔑 Got Clerk token");
+        const realtime = await getRealtime();
+        if (!mounted || runId !== subscribeRunIdRef.current) return;
 
-        supabaseRef.current = createClerkSupabaseClient(token);
-        realtimeRef.current = getRealtimeClient(token);
+        // cleanup old channels
+        try {
+          if (notifChannelRef.current && realtimeRef.current) {
+            realtimeRef.current.removeChannel(notifChannelRef.current);
+            notifChannelRef.current = null;
+          }
+        } catch {}
+        try {
+          if (reqChannelRef.current && realtimeRef.current) {
+            realtimeRef.current.removeChannel(reqChannelRef.current);
+            reqChannelRef.current = null;
+          }
+        } catch {}
 
-        await loadNotifications();
-        if (!mounted) return;
-
-        console.log(`🔌 Subscribing to notifications:${supabaseUserId}`);
-
-        channel = realtimeRef.current
+        // notifications channel (by supabase user uuid)
+        notifChannelRef.current = realtime
           .channel(`notifications:${supabaseUserId}`)
           .on(
             "postgres_changes",
@@ -278,76 +451,81 @@ export default function VolunteerNotifications() {
             (payload) => {
               if (!mounted) return;
 
-              console.log("📨 Realtime event:", payload.eventType);
-
               if (payload.eventType === "INSERT") {
                 setNotifications((prev) => [payload.new, ...prev]);
-
-                if (payload.new.unread) {
-                  setUnreadCount((c) => c + 1);
-                  console.log("🔔 New unread notification!");
-                }
+                if (payload.new?.unread) setUnreadCount((c) => c + 1);
+                return;
               }
 
               if (payload.eventType === "UPDATE") {
-                setNotifications((prev) =>
-                  prev.map((n) => (n.id === payload.new.id ? payload.new : n)),
-                );
-
-                setUnreadCount((prevCount) => {
-                  const oldNotif = notifications.find(
-                    (n) => n.id === payload.new.id,
+                setNotifications((prev) => {
+                  const old = prev.find((n) => n.id === payload.new.id);
+                  const next = prev.map((n) =>
+                    n.id === payload.new.id ? payload.new : n,
                   );
 
-                  if (oldNotif?.unread && !payload.new.unread) {
-                    return Math.max(0, prevCount - 1);
+                  if (old?.unread !== payload.new?.unread) {
+                    setUnreadCount((c) =>
+                      payload.new?.unread ? c + 1 : Math.max(0, c - 1),
+                    );
                   }
-
-                  if (!oldNotif?.unread && payload.new.unread) {
-                    return prevCount + 1;
-                  }
-
-                  return prevCount;
+                  return next;
                 });
+                return;
               }
 
               if (payload.eventType === "DELETE") {
                 setNotifications((prev) => {
                   const deleted = prev.find((n) => n.id === payload.old.id);
-
-                  if (deleted?.unread) {
+                  if (deleted?.unread)
                     setUnreadCount((c) => Math.max(0, c - 1));
-                  }
-
                   return prev.filter((n) => n.id !== payload.old.id);
                 });
               }
             },
           )
-          .subscribe((s) => {
-            if (!mounted) return;
-            console.log("📡 Subscription status:", s);
-            setStatus(s);
+          .subscribe();
 
-            if (s === "SUBSCRIBED") {
-              console.log("✅ Successfully subscribed to realtime");
-            }
-          });
-
-        channelRef.current = channel;
-      } catch (error) {
-        console.error("❌ Exception in realtime setup:", error);
+        // adoption_requests channel (by owner_id = Clerk user.id)
+        reqChannelRef.current = realtime
+          .channel(`adoption-requests:${user.id}`)
+          .on(
+            "postgres_changes",
+            {
+              event: "*",
+              schema: "public",
+              table: "adoption_requests",
+              filter: `owner_id=eq.${user.id}`,
+            },
+            () => {
+              // reload requests (simple + safe)
+              loadRequests();
+            },
+          )
+          .subscribe();
+      } catch (e) {
+        console.error("❌ Exception in realtime setup:", e);
+      } finally {
+        if (isMountedRef.current) setLoading(false);
       }
     })();
 
     return () => {
       mounted = false;
-      if (channel && realtimeRef.current) {
-        console.log("🔌 Unsubscribing from channel");
-        realtimeRef.current.removeChannel(channel);
-      }
+      try {
+        if (notifChannelRef.current && realtimeRef.current) {
+          realtimeRef.current.removeChannel(notifChannelRef.current);
+        }
+      } catch {}
+      try {
+        if (reqChannelRef.current && realtimeRef.current) {
+          realtimeRef.current.removeChannel(reqChannelRef.current);
+        }
+      } catch {}
+      notifChannelRef.current = null;
+      reqChannelRef.current = null;
     };
-  }, [supabaseUserId, loadNotifications]);
+  }, [supabaseUserId, user?.id, loadNotifications, loadRequests, getRealtime]);
 
   /* ================= COMPONENT LIFECYCLE ================= */
   useEffect(() => {
@@ -357,25 +535,58 @@ export default function VolunteerNotifications() {
     };
   }, []);
 
+  /* ================= COMBINED FEED ================= */
+  const combinedItems = useMemo(() => {
+    const reqItems = (requests || []).map((r) => {
+      const petName = r.pets?.name || "สัตว์เลี้ยง";
+      const status = r.status;
+      const color = REQUEST_STATUS_COLOR[status] || "#5856D6";
+      const icon =
+        status === "approved" ? "✅" : status === "rejected" ? "❌" : "⏳";
+
+      return {
+        __type: "request",
+        id: r.id,
+        created_at: r.created_at,
+        title: `คำขอรับเลี้ยง ${petName}`,
+        description: `สถานะ: ${REQUEST_STATUS_TEXT[status] || status}`,
+        accentColor: color,
+        icon,
+        petImage: r.pets?.image_url || null,
+        petCategory: r.pets?.category || null,
+      };
+    });
+
+    const notiItems = (notifications || []).map((n) => ({
+      __type: "notification",
+      ...n,
+    }));
+
+    return [...reqItems, ...notiItems].sort(
+      (a, b) => new Date(b.created_at) - new Date(a.created_at),
+    );
+  }, [requests, notifications]);
+
   /* ================= REFRESH ================= */
   const onRefresh = async () => {
     setRefreshing(true);
-    await loadNotifications();
+    await Promise.all([loadNotifications(), loadRequests()]);
     setRefreshing(false);
   };
 
   /* ================= MARK AS READ ================= */
   const markAsRead = useCallback(
     async (id) => {
-      if (!supabaseRef.current) return;
-
       try {
+        const supabase = await getSupabase();
+
+        // optimistic update
         setNotifications((prev) =>
           prev.map((n) => (n.id === id ? { ...n, unread: false } : n)),
         );
         setUnreadCount((c) => Math.max(0, c - 1));
 
-        const { error } = await supabaseRef.current
+        const { error } = await supabase
           .from("notifications")
           .update({ unread: false })
           .eq("id", id);
@@ -385,30 +596,27 @@ export default function VolunteerNotifications() {
           await loadNotifications();
           return;
         }
-
-        console.log("✅ Marked as read:", id);
-      } catch (error) {
-        console.error("❌ Exception in markAsRead:", error);
+      } catch (e) {
+        console.error("❌ Exception in markAsRead:", e);
         await loadNotifications();
       }
     },
-    [loadNotifications],
+    [getSupabase, loadNotifications],
   );
 
-  /* ================= DELETE ================= */
+  /* ================= DELETE NOTIFICATION ================= */
   const deleteNotification = useCallback(
     async (id) => {
-      if (!supabaseRef.current) return;
-
       try {
-        const toDelete = notifications.find((n) => n.id === id);
+        const supabase = await getSupabase();
 
-        setNotifications((prev) => prev.filter((n) => n.id !== id));
-        if (toDelete?.unread) {
-          setUnreadCount((c) => Math.max(0, c - 1));
-        }
+        setNotifications((prev) => {
+          const toDelete = prev.find((n) => n.id === id);
+          if (toDelete?.unread) setUnreadCount((c) => Math.max(0, c - 1));
+          return prev.filter((n) => n.id !== id);
+        });
 
-        const { error } = await supabaseRef.current
+        const { error } = await supabase
           .from("notifications")
           .delete()
           .eq("id", id);
@@ -416,58 +624,14 @@ export default function VolunteerNotifications() {
         if (error) {
           console.error("❌ Delete error:", error);
           await loadNotifications();
-          return;
         }
-
-        console.log("🗑️ Deleted notification:", id);
-      } catch (error) {
-        console.error("❌ Exception in deleteNotification:", error);
+      } catch (e) {
+        console.error("❌ Exception in deleteNotification:", e);
         await loadNotifications();
       }
     },
-    [notifications, loadNotifications],
+    [getSupabase, loadNotifications],
   );
-
-  /* ================= RENDER ITEM ================= */
-  const renderItem = useCallback(
-    ({ item }) => (
-      <NotificationCard
-        item={item}
-        onPress={() => item.unread && markAsRead(item.id)}
-        onLongPress={() => deleteNotification(item.id)}
-      />
-    ),
-    [markAsRead, deleteNotification],
-  );
-
-  /* ================= CONNECTION STATUS COMPONENT ================= */
-  const ConnectionStatus = () => {
-    const getStatusInfo = () => {
-      switch (status) {
-        case "SUBSCRIBED":
-          return { icon: "●", color: "#34C759", text: "เชื่อมต่อแล้ว" };
-        case "CHANNEL_ERROR":
-          return { icon: "●", color: "#FF3B30", text: "ข้อผิดพลาด" };
-        case "TIMED_OUT":
-          return { icon: "●", color: "#FF9500", text: "หมดเวลา" };
-        case "CLOSED":
-          return { icon: "●", color: "#8E8E93", text: "ปิดการเชื่อมต่อ" };
-        default:
-          return { icon: "●", color: "#FF9500", text: "กำลังเชื่อมต่อ..." };
-      }
-    };
-
-    const statusInfo = getStatusInfo();
-
-    return (
-      <View style={styles.statusContainer}>
-        <Text style={[styles.statusDot, { color: statusInfo.color }]}>
-          {statusInfo.icon}
-        </Text>
-        <Text style={styles.statusText}>{statusInfo.text}</Text>
-      </View>
-    );
-  };
 
   /* ================= UI ================= */
   if (!isLoaded || loading) {
@@ -487,7 +651,6 @@ export default function VolunteerNotifications() {
       <View style={styles.header}>
         <View>
           <Text style={styles.headerTitle}>การแจ้งเตือน</Text>
-          <ConnectionStatus />
         </View>
 
         {unreadCount > 0 && (
@@ -497,10 +660,10 @@ export default function VolunteerNotifications() {
         )}
       </View>
 
-      {/* Notifications List */}
+      {/* Feed */}
       <FlatList
-        data={notifications}
-        keyExtractor={(i) => String(i.id)}
+        data={combinedItems}
+        keyExtractor={(i) => `${i.__type}-${i.id}`}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -509,7 +672,21 @@ export default function VolunteerNotifications() {
             colors={["#007AFF"]}
           />
         }
-        renderItem={renderItem}
+        renderItem={({ item }) => (
+          <NotificationCard
+            item={item}
+            onPress={() => {
+              if (item.__type === "request") {
+                router.push(`/requests/${item.id}`);
+                return;
+              }
+              if (item.unread) markAsRead(item.id);
+            }}
+            onLongPress={() => {
+              if (item.__type === "notification") deleteNotification(item.id);
+            }}
+          />
+        )}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
         ListEmptyComponent={
@@ -581,20 +758,6 @@ const styles = StyleSheet.create({
     color: "#000",
     marginBottom: 4,
   },
-  statusContainer: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginTop: 4,
-  },
-  statusDot: {
-    fontSize: 8,
-    marginRight: 6,
-  },
-  statusText: {
-    fontSize: 13,
-    color: "#8E8E93",
-    fontWeight: "500",
-  },
   badge: {
     backgroundColor: "#FF3B30",
     borderRadius: 16,
@@ -655,6 +818,19 @@ const styles = StyleSheet.create({
   },
   iconText: {
     fontSize: 24,
+  },
+  petAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    marginRight: 12,
+    backgroundColor: "#F2F2F7",
+    justifyContent: "center",
+    alignItems: "center",
+    overflow: "hidden",
+  },
+  petEmoji: {
+    fontSize: 22,
   },
   textContainer: {
     flex: 1,

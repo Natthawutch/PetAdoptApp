@@ -1,3 +1,10 @@
+// app/volunteer/report-detail.jsx
+// ✅ UPDATED: "ช่วยเหลือไม่สำเร็จ" (แบบให้คนอื่นช่วยต่อได้) = คืนเคสกลับคิว
+// - status -> "pending"
+// - assigned_volunteer_id -> null
+// - completed_at -> null
+// - เก็บเหตุผลไว้ใน completion_note (และแนบหลักฐานได้ถ้ามี)
+
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
 import * as FileSystem from "expo-file-system/legacy";
@@ -58,8 +65,11 @@ export default function ReportDetail() {
 
   const [accepting, setAccepting] = useState(false);
 
-  // ✅ ปิดเคสไม่สำเร็จ
+  // ✅ คืนเคส/ปิดเคสไม่สำเร็จ
   const [failing, setFailing] = useState(false);
+
+  // ✅ เริ่มแชทกับผู้แจ้ง
+  const [startingChat, setStartingChat] = useState(false);
 
   useEffect(() => {
     loadReport();
@@ -334,6 +344,71 @@ export default function ReportDetail() {
     return uploadedUrls;
   };
 
+  /* ================== ✅ Chat with reporter ================== */
+  // chats schema: id(text NOT NULL), user1_id(text), user2_id(text), last_message(text), last_message_at(timestamptz)
+  const startChatWithReporter = async () => {
+    try {
+      if (!user?.id) {
+        Alert.alert("เกิดข้อผิดพลาด", "กรุณาเข้าสู่ระบบใหม่");
+        return;
+      }
+      if (!report?.user_id) {
+        Alert.alert("ไม่พบผู้แจ้ง", "รายงานนี้ไม่มีข้อมูลผู้แจ้ง");
+        return;
+      }
+      if (startingChat) return;
+
+      setStartingChat(true);
+
+      const token = await getToken({ template: "supabase", skipCache: true });
+      const supabase = createClerkSupabaseClient(token);
+
+      const myClerkId = user.id;
+      const reporterClerkId = report.user_id;
+
+      if (myClerkId === reporterClerkId) {
+        Alert.alert("แจ้งเตือน", "คุณคือผู้แจ้งรายงานนี้");
+        return;
+      }
+
+      // 1) หา chat เดิม (สลับ user1/user2)
+      const { data: existing, error: findErr } = await supabase
+        .from("chats")
+        .select("id")
+        .or(
+          `and(user1_id.eq.${myClerkId},user2_id.eq.${reporterClerkId}),and(user1_id.eq.${reporterClerkId},user2_id.eq.${myClerkId})`,
+        )
+        .maybeSingle();
+
+      if (findErr) throw findErr;
+
+      let chatId = existing?.id;
+
+      // 2) ถ้าไม่มี -> สร้างใหม่ (ต้องใส่ id เอง)
+      if (!chatId) {
+        chatId = Crypto.randomUUID();
+
+        const { error: createErr } = await supabase.from("chats").insert({
+          id: chatId,
+          user1_id: myClerkId,
+          user2_id: reporterClerkId,
+          last_message: "",
+          last_message_at: new Date().toISOString(),
+        });
+
+        if (createErr) throw createErr;
+      }
+
+      // 3) ไปหน้าแชทตาม route จริง: app/chat/[id].jsx
+      router.push(`/chat/${chatId}`);
+    } catch (e) {
+      console.error("startChatWithReporter error:", e);
+      Alert.alert("เกิดข้อผิดพลาด", "ไม่สามารถเริ่มแชทได้");
+    } finally {
+      setStartingChat(false);
+    }
+  };
+
   const handleCompleteWithEvidence = async () => {
     if (!canComplete) {
       Alert.alert("ทำไม่ได้", "คุณไม่ใช่อาสาที่รับผิดชอบเคสนี้");
@@ -389,8 +464,8 @@ export default function ReportDetail() {
     ]);
   };
 
-  // ✅ ปิดเคสแบบช่วยเหลือไม่สำเร็จ (ไม่บังคับหลักฐาน)
-  const closeFailed = async (note) => {
+  // ✅ คืนเคสกลับคิว (ให้อาสาคนอื่นรับช่วงต่อได้)
+  const returnToQueue = async (note) => {
     if (!canComplete) {
       Alert.alert("ทำไม่ได้", "คุณไม่ใช่อาสาที่รับผิดชอบเคสนี้");
       return;
@@ -399,8 +474,8 @@ export default function ReportDetail() {
     if (failing) return;
 
     Alert.alert(
-      "ปิดเคส (ช่วยเหลือไม่สำเร็จ)",
-      `ยืนยันการปิดเคสเป็น "ช่วยเหลือไม่สำเร็จ" ใช่ไหม?\nเหตุผล: ${note}`,
+      "คืนเคสเข้าคิว",
+      `ยืนยันการคืนเคสกลับเข้าคิวเพื่อให้อาสาคนอื่นรับช่วงต่อ?\nเหตุผล: ${note}`,
       [
         { text: "ยกเลิก", style: "cancel" },
         {
@@ -416,7 +491,7 @@ export default function ReportDetail() {
               });
               const supabase = createClerkSupabaseClient(token);
 
-              // ถ้ามีแนบรูปไว้ และอยากเก็บไว้เป็นหลักฐานแม้ช่วยไม่สำเร็จ ก็อัปโหลดได้
+              // (optional) แนบหลักฐานเพิ่มได้
               let urls = Array.isArray(report?.evidence_urls)
                 ? report.evidence_urls
                 : [];
@@ -430,14 +505,99 @@ export default function ReportDetail() {
                 urls = [...urls, ...newUrls].slice(0, MAX_EVIDENCE);
               }
 
-              // update แบบมีเงื่อนไข (กัน race condition)
+              // ✅ สำคัญ: status -> pending, assigned -> null, completed_at -> null
               const { data: updatedRows, error: updErr } = await supabase
                 .from("reports")
                 .update({
-                  status: "failed", // ✅ เพิ่ม status ใหม่ (เป็น text อยู่แล้ว ใช้ได้เลย)
-                  completed_at: new Date().toISOString(), // ใช้ completed_at เป็น "เวลาปิดเคส" ได้เลย ไม่ต้องเพิ่มคอลัมน์ใหม่
+                  status: "pending",
+                  assigned_volunteer_id: null,
+                  completed_at: null,
+                  completion_note: note, // เก็บเหตุผลไว้ให้ผู้แจ้งเห็นได้
                   evidence_urls: urls.length ? urls : null,
-                  completion_note: note, // ✅ ใช้คอลัมน์เดิมเก็บเหตุผล
+                  // ถ้ามีคอลัมน์ returned_at ใน DB ค่อยเปิดใช้:
+                  // returned_at: new Date().toISOString(),
+                })
+                .eq("id", report.id)
+                .eq("status", "in_progress")
+                .eq("assigned_volunteer_id", currentUserId)
+                .select("id, status");
+
+              if (updErr) throw updErr;
+
+              if (!updatedRows || updatedRows.length === 0) {
+                Alert.alert(
+                  "คืนเคสไม่สำเร็จ",
+                  "สถานะเคสเปลี่ยนไปแล้ว หรือคุณไม่ใช่ผู้รับผิดชอบ",
+                );
+                await loadReport();
+                return;
+              }
+
+              Alert.alert("สำเร็จ", "คืนเคสกลับเข้าคิวแล้ว");
+              setEvidence([]);
+              await loadReport();
+
+              // กลับหน้า list เพื่อให้เห็นว่าเคสกลับเข้าคิวแล้ว
+              router.back();
+            } catch (e) {
+              console.error("❌ returnToQueue error:", e);
+              Alert.alert("เกิดข้อผิดพลาด", "ไม่สามารถคืนเคสได้");
+            } finally {
+              setFailing(false);
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  // (ทางเลือก) ปิดเคส “failed” แบบปิดถาวรจริง ๆ
+  const closeFailedPermanent = async (note) => {
+    if (!canComplete) {
+      Alert.alert("ทำไม่ได้", "คุณไม่ใช่อาสาที่รับผิดชอบเคสนี้");
+      return;
+    }
+    if (!report?.id) return;
+    if (failing) return;
+
+    Alert.alert(
+      "ปิดเคส (ปิดถาวร)",
+      `ยืนยันการปิดเคสเป็น "ช่วยเหลือไม่สำเร็จ" และจบเคส?\nเหตุผล: ${note}`,
+      [
+        { text: "ยกเลิก", style: "cancel" },
+        {
+          text: "ยืนยัน",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              setFailing(true);
+
+              const token = await getToken({
+                template: "supabase",
+                skipCache: true,
+              });
+              const supabase = createClerkSupabaseClient(token);
+
+              let urls = Array.isArray(report?.evidence_urls)
+                ? report.evidence_urls
+                : [];
+
+              if (evidence.length > 0) {
+                const newUrls = await uploadEvidenceImages(
+                  supabase,
+                  report.id,
+                  evidence,
+                );
+                urls = [...urls, ...newUrls].slice(0, MAX_EVIDENCE);
+              }
+
+              const { data: updatedRows, error: updErr } = await supabase
+                .from("reports")
+                .update({
+                  status: "failed",
+                  completed_at: new Date().toISOString(),
+                  evidence_urls: urls.length ? urls : null,
+                  completion_note: note,
                 })
                 .eq("id", report.id)
                 .eq("status", "in_progress")
@@ -458,6 +618,7 @@ export default function ReportDetail() {
               Alert.alert("สำเร็จ", "ปิดเคสเป็นช่วยเหลือไม่สำเร็จแล้ว");
               setEvidence([]);
               await loadReport();
+              router.back();
             } catch (e) {
               console.error("❌ close failed error:", e);
               Alert.alert("เกิดข้อผิดพลาด", "ไม่สามารถปิดเคสได้");
@@ -476,18 +637,48 @@ export default function ReportDetail() {
       return;
     }
 
-    Alert.alert("ปิดเคส (ช่วยเหลือไม่สำเร็จ)", "เลือกเหตุผล", [
+    // ✅ เลือก: คืนเคสเข้าคิว (ให้คนอื่นช่วยต่อ) หรือปิดถาวร
+    Alert.alert("ช่วยต่อไม่ได้", "เลือกการดำเนินการ", [
       {
-        text: "ไปแล้วไม่พบสัตว์",
-        onPress: () => closeFailed("ไปแล้วไม่พบสัตว์"),
+        text: "คืนเคสเข้าคิว (ให้คนอื่นช่วยต่อ)",
+        onPress: () => {
+          Alert.alert("เลือกเหตุผล", "", [
+            {
+              text: "ไปแล้วไม่พบสัตว์",
+              onPress: () => returnToQueue("ไปแล้วไม่พบสัตว์"),
+            },
+            {
+              text: "ข้อมูล/พิกัดไม่ถูกต้อง",
+              onPress: () => returnToQueue("ข้อมูล/พิกัดไม่ถูกต้อง"),
+            },
+            {
+              text: "เข้าถึงไม่ได้/สัตว์หนี/ช่วยไม่ได้",
+              onPress: () => returnToQueue("เข้าถึงไม่ได้/สัตว์หนี/ช่วยไม่ได้"),
+            },
+            { text: "ยกเลิก", style: "cancel" },
+          ]);
+        },
       },
       {
-        text: "ข้อมูล/พิกัดไม่ถูกต้อง",
-        onPress: () => closeFailed("ข้อมูล/พิกัดไม่ถูกต้อง"),
-      },
-      {
-        text: "เข้าถึงไม่ได้/สัตว์หนี/ช่วยไม่ได้",
-        onPress: () => closeFailed("เข้าถึงไม่ได้/สัตว์หนี/ช่วยไม่ได้"),
+        text: "ปิดเคสถาวร (ช่วยไม่สำเร็จ)",
+        style: "destructive",
+        onPress: () => {
+          Alert.alert("เลือกเหตุผล", "", [
+            {
+              text: "สัตว์เสียชีวิต/เกินเยียวยา",
+              onPress: () => closeFailedPermanent("สัตว์เสียชีวิต/เกินเยียวยา"),
+            },
+            {
+              text: "เคสซ้ำ/ไม่เข้าเงื่อนไข",
+              onPress: () => closeFailedPermanent("เคสซ้ำ/ไม่เข้าเงื่อนไข"),
+            },
+            {
+              text: "อื่น ๆ (ช่วยต่อไม่ได้)",
+              onPress: () => closeFailedPermanent("ช่วยต่อไม่ได้"),
+            },
+            { text: "ยกเลิก", style: "cancel" },
+          ]);
+        },
       },
       { text: "ยกเลิก", style: "cancel" },
     ]);
@@ -694,6 +885,26 @@ export default function ReportDetail() {
                   {reporter.full_name || "ไม่ระบุชื่อ"}
                 </Text>
                 <Text style={styles.coordText}>{reporter.email}</Text>
+
+                <TouchableOpacity
+                  style={[styles.chatButton, startingChat && { opacity: 0.75 }]}
+                  onPress={startChatWithReporter}
+                  disabled={startingChat}
+                  activeOpacity={0.85}
+                >
+                  {startingChat ? (
+                    <ActivityIndicator color="#fff" />
+                  ) : (
+                    <>
+                      <Ionicons
+                        name="chatbubble-ellipses"
+                        size={18}
+                        color="#fff"
+                      />
+                      <Text style={styles.chatButtonText}>แชทกับผู้แจ้ง</Text>
+                    </>
+                  )}
+                </TouchableOpacity>
               </>
             ) : (
               <View style={{ paddingVertical: 8 }}>
@@ -729,7 +940,6 @@ export default function ReportDetail() {
         </View>
       </View>
 
-      {/* ✅ แสดงหลักฐานและโน้ตเมื่อปิดเคส (ทั้งสำเร็จ/ไม่สำเร็จ) */}
       {(report.status === "completed" || report.status === "failed") &&
         Array.isArray(report.evidence_urls) &&
         report.evidence_urls.length > 0 && (
@@ -856,7 +1066,6 @@ export default function ReportDetail() {
                 </ScrollView>
               )}
 
-              {/* ✅ ปิดเคสสำเร็จ (ต้องแนบรูป) */}
               <TouchableOpacity
                 style={[styles.completeButton, submitting && { opacity: 0.75 }]}
                 onPress={handleCompleteWithEvidence}
@@ -875,7 +1084,6 @@ export default function ReportDetail() {
                 )}
               </TouchableOpacity>
 
-              {/* ✅ ปิดเคสไม่สำเร็จ (ไม่บังคับแนบรูป) */}
               <TouchableOpacity
                 style={[styles.failButton, failing && { opacity: 0.75 }]}
                 onPress={handleFailCase}
@@ -888,7 +1096,7 @@ export default function ReportDetail() {
                   <>
                     <Ionicons name="close-circle" size={20} color="#fff" />
                     <Text style={styles.failButtonText}>
-                      ปิดเคส (ช่วยเหลือไม่สำเร็จ)
+                      ช่วยต่อไม่ได้ / คืนเคส
                     </Text>
                   </>
                 )}
@@ -1141,7 +1349,6 @@ const styles = StyleSheet.create({
   },
   completeButtonText: { color: "#fff", fontSize: 16, fontWeight: "800" },
 
-  // ✅ ปุ่มปิดเคสไม่สำเร็จ
   failButton: {
     marginTop: 10,
     backgroundColor: "#f59e0b",
@@ -1158,4 +1365,16 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   failButtonText: { color: "#fff", fontSize: 15, fontWeight: "800" },
+
+  chatButton: {
+    marginTop: 10,
+    backgroundColor: "#8b5cf6",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 12,
+    borderRadius: 12,
+    gap: 8,
+  },
+  chatButtonText: { color: "#fff", fontSize: 14, fontWeight: "800" },
 });

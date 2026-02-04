@@ -8,6 +8,7 @@ import {
   Image,
   Modal,
   SafeAreaView,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -22,6 +23,38 @@ const ADMIN_EMAILS = [
 ];
 
 const STATUS_OPTIONS = ["open", "reviewing", "resolved", "dismissed"];
+
+// ✅ แก้ไข: ใช้ค่าที่ตรงกับฐานข้อมูล
+const POST_STATUS_ACTIVE = "active"; // โพสต์ปกติ
+const POST_STATUS_HIDDEN = "hidden"; // โพสต์ที่ซ่อน
+
+const formatThaiDateTime = (iso) => {
+  try {
+    return new Date(iso).toLocaleString("th-TH", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+  } catch {
+    return "-";
+  }
+};
+
+// ✅ UI helper components
+const Section = ({ title, children }) => (
+  <View style={styles.section}>
+    <Text style={styles.sectionTitle}>{title}</Text>
+    <View style={{ gap: 8 }}>{children}</View>
+  </View>
+);
+
+const Row = ({ label, value, mono }) => (
+  <View style={styles.row}>
+    <Text style={styles.rowLabel}>{label}</Text>
+    <Text style={[styles.rowValue, mono && styles.mono]} numberOfLines={2}>
+      {value || "-"}
+    </Text>
+  </View>
+);
 
 export default function AdminUserReports() {
   const { user, isLoaded } = useUser();
@@ -42,13 +75,15 @@ export default function AdminUserReports() {
   const [reports, setReports] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [query, setQuery] = useState("");
 
   const [selected, setSelected] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [editingStatus, setEditingStatus] = useState("open");
   const [editingNote, setEditingNote] = useState("");
   const [saving, setSaving] = useState(false);
+
+  // ✅ เพิ่มเหตุผลสำหรับ dismiss (รายงานไม่จริง)
+  const [dismissReason, setDismissReason] = useState("");
 
   const getSupabase = async () => {
     const token = await getTokenRef.current({ template: "supabase" });
@@ -61,7 +96,6 @@ export default function AdminUserReports() {
     try {
       const supabase = await getSupabase();
 
-      // ✅ Step 1: ดึงรายงาน + pets ก่อน
       const { data: rawReports, error } = await supabase
         .from("user_reports")
         .select(
@@ -72,7 +106,7 @@ export default function AdminUserReports() {
           status, admin_note,
           created_at, updated_at,
           pets (
-            id, name, category, breed, image_url, user_id
+            id, name, category, breed, image_url, user_id, post_status
           )
         `,
         )
@@ -83,7 +117,7 @@ export default function AdminUserReports() {
         throw error;
       }
 
-      // ✅ Step 2: ดึงชื่อ users แยก (เพราะ FK ไม่มี)
+      // ✅ ดึงชื่อ users แยก (เพราะบางที FK users ไม่ตรงกับ clerk_id)
       const clerkIds = new Set();
       (rawReports || []).forEach((r) => {
         if (r.reporter_clerk_id) clerkIds.add(r.reporter_clerk_id);
@@ -95,11 +129,8 @@ export default function AdminUserReports() {
         .select("clerk_id, full_name, avatar_url")
         .in("clerk_id", Array.from(clerkIds));
 
-      if (usersError) {
-        console.error("fetchUsers error:", usersError);
-      }
+      if (usersError) console.error("fetchUsers error:", usersError);
 
-      // ✅ Step 3: แปะชื่อเข้าไปใน reports
       const usersMap = new Map((usersData || []).map((u) => [u.clerk_id, u]));
 
       const data = (rawReports || []).map((r) => ({
@@ -108,7 +139,6 @@ export default function AdminUserReports() {
         reported: usersMap.get(r.reported_clerk_id) || null,
       }));
 
-      console.log("✅ Fetched reports:", data?.length || 0);
       setReports(data || []);
     } catch (e) {
       console.error("fetchReports error:", e);
@@ -130,37 +160,11 @@ export default function AdminUserReports() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isLoaded, !!user, isAdmin]);
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return reports;
-
-    return reports.filter((r) => {
-      const pet = r.pets;
-      const hay = [
-        r.reason,
-        r.details,
-        r.status,
-        r.reporter_clerk_id,
-        r.reported_clerk_id,
-        r.pet_id,
-        r.reporter?.full_name,
-        r.reported?.full_name,
-        pet?.name,
-        pet?.category,
-        pet?.breed,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
-
-      return hay.includes(q);
-    });
-  }, [reports, query]);
-
   const openDetail = (report) => {
     setSelected(report);
     setEditingStatus(report.status || "open");
     setEditingNote(report.admin_note || "");
+    setDismissReason("");
     setShowModal(true);
   };
 
@@ -206,35 +210,99 @@ export default function AdminUserReports() {
     }
   };
 
-  // ✅ ลบโพสต์ (pets) จากรายงานนี้
-  const deletePetPost = async () => {
-    if (!selected?.pet_id) {
-      Alert.alert("ลบไม่ได้", "รายงานนี้ไม่มี pet_id หรือโพสต์ถูกลบไปแล้ว");
+  const dismissAsFalseReport = async () => {
+    if (!selected?.id) return;
+
+    const reason = dismissReason.trim();
+    if (!reason) {
+      Alert.alert("กรุณากรอกเหตุผล", "ต้องระบุเหตุผลที่ dismiss รายงาน");
       return;
     }
 
-    Alert.alert("ยืนยันลบโพสต์", "ลบแล้วกู้คืนไม่ได้ แน่ใจไหม?", [
+    Alert.alert("ยืนยัน dismiss", "ยืนยันว่ารายงานนี้ไม่จริง/ไม่เข้าข่าย?", [
       { text: "ยกเลิก", style: "cancel" },
       {
-        text: "ลบ",
+        text: "ยืนยัน",
         style: "destructive",
         onPress: async () => {
           try {
             setSaving(true);
             const supabase = await getSupabase();
 
-            // 1) ลบโพสต์ในตาราง pets
-            const { error: delError } = await supabase
+            const noteParts = [
+              (editingNote || "").trim(),
+              `[Dismiss] ${reason}`,
+            ].filter(Boolean);
+
+            const payload = {
+              status: "dismissed",
+              admin_note: noteParts.join("\n") || null,
+            };
+
+            const { error } = await supabase
+              .from("user_reports")
+              .update(payload)
+              .eq("id", selected.id);
+
+            if (error) throw error;
+
+            setReports((prev) =>
+              prev.map((r) =>
+                r.id === selected.id ? { ...r, ...payload } : r,
+              ),
+            );
+
+            Alert.alert("สำเร็จ", "Dismiss เคสเรียบร้อย ✅");
+            setShowModal(false);
+            setSelected(null);
+          } catch (e) {
+            console.error("dismissAsFalseReport error:", e);
+            Alert.alert("ทำรายการไม่ได้", e?.message || "เกิดข้อผิดพลาด");
+          } finally {
+            setSaving(false);
+          }
+        },
+      },
+    ]);
+  };
+
+  const hidePetPost = async () => {
+    if (!selected?.pet_id) {
+      Alert.alert("ทำไม่ได้", "รายงานนี้ไม่มี pet_id หรือโพสต์ถูกลบไปแล้ว");
+      return;
+    }
+
+    Alert.alert("ยืนยันซ่อนโพสต์", "ซ่อนโพสต์นี้จากหน้า feed?", [
+      { text: "ยกเลิก", style: "cancel" },
+      {
+        text: "ซ่อน",
+        style: "destructive",
+        onPress: async () => {
+          try {
+            setSaving(true);
+            const supabase = await getSupabase();
+
+            const { data: updatedPet, error: hideError } = await supabase
               .from("pets")
-              .delete()
-              .eq("id", selected.pet_id);
+              .update({ post_status: POST_STATUS_HIDDEN })
+              .eq("id", selected.pet_id)
+              .select("id, post_status")
+              .single();
 
-            if (delError) throw delError;
+            console.log("HIDE result:", updatedPet, hideError);
 
-            // 2) อัปเดต report ให้ resolved + note
+            if (hideError) {
+              Alert.alert(
+                "ซ่อนไม่ได้",
+                hideError.message ||
+                  "RLS policy บล็อคอยู่ (เช็ค is_admin() / clerk_user_id())",
+              );
+              return;
+            }
+
             const note = [
               (editingNote || "").trim(),
-              "[Action] deleted pet post",
+              "[Action] hidden pet post",
               `pet_id=${selected.pet_id}`,
             ]
               .filter(Boolean)
@@ -242,27 +310,89 @@ export default function AdminUserReports() {
 
             const { error: repError } = await supabase
               .from("user_reports")
-              .update({
-                status: "resolved",
-                admin_note: note || null,
-              })
+              .update({ status: "resolved", admin_note: note || null })
               .eq("id", selected.id);
 
             if (repError) throw repError;
 
-            Alert.alert("สำเร็จ", "ลบโพสต์แล้ว และปิดเคสเรียบร้อย ✅");
+            Alert.alert("สำเร็จ", "ซ่อนโพสต์แล้ว ✅");
             setShowModal(false);
             setSelected(null);
             fetchReports();
           } catch (e) {
-            console.error("deletePetPost error:", e);
-            Alert.alert("ลบไม่ได้", e?.message || "เกิดข้อผิดพลาด");
+            console.error("hidePetPost error:", e);
+            Alert.alert("ทำไม่ได้", e?.message || "เกิดข้อผิดพลาด");
           } finally {
             setSaving(false);
           }
         },
       },
     ]);
+  };
+
+  const restorePetPost = async () => {
+    if (!selected?.pet_id) {
+      Alert.alert("ทำไม่ได้", "รายงานนี้ไม่มี pet_id หรือโพสต์ถูกลบไปแล้ว");
+      return;
+    }
+
+    Alert.alert("ยืนยันคืนโพสต์", "คืนโพสต์นี้ให้กลับมาแสดงใน feed?", [
+      { text: "ยกเลิก", style: "cancel" },
+      {
+        text: "คืนโพสต์",
+        onPress: async () => {
+          try {
+            setSaving(true);
+            const supabase = await getSupabase();
+
+            const { data: updatedPet, error } = await supabase
+              .from("pets")
+              .update({ post_status: POST_STATUS_ACTIVE })
+              .eq("id", selected.pet_id)
+              .select("id, post_status")
+              .single();
+
+            console.log("RESTORE result:", updatedPet, error);
+
+            if (error) {
+              Alert.alert("คืนไม่ได้", error.message || "RLS policy บล็อคอยู่");
+              return;
+            }
+
+            const note = [
+              (editingNote || "").trim(),
+              "[Action] restored pet post",
+              `pet_id=${selected.pet_id}`,
+            ]
+              .filter(Boolean)
+              .join("\n");
+
+            await supabase
+              .from("user_reports")
+              .update({ admin_note: note || null })
+              .eq("id", selected.id);
+
+            Alert.alert("สำเร็จ", "คืนโพสต์แล้ว ✅");
+            setShowModal(false);
+            setSelected(null);
+            fetchReports();
+          } catch (e) {
+            console.error("restorePetPost error:", e);
+            Alert.alert("ทำไม่ได้", e?.message || "เกิดข้อผิดพลาด");
+          } finally {
+            setSaving(false);
+          }
+        },
+      },
+    ]);
+  };
+
+  /**
+   * ✅ สำคัญ: ตอนนี้ "ลบจริง" จะพัง เพราะ FK user_reports_pet_id_fkey + pet_id NOT NULL
+   * ดังนั้น เพื่อส่งงานทัน -> ปุ่มลบให้ทำงานเป็น "ซ่อนโพสต์" แทนก่อน
+   */
+  const deletePetPost = async () => {
+    await hidePetPost();
   };
 
   const onRefresh = () => {
@@ -283,6 +413,13 @@ export default function AdminUserReports() {
       default:
         return { bg: "#F3F4F6", fg: "#374151" };
     }
+  };
+
+  const postStatusBadge = (st) => {
+    const s = (st || "").toLowerCase();
+    if (s === POST_STATUS_HIDDEN) return { bg: "#FEE2E2", fg: "#991B1B" };
+    if (s === POST_STATUS_ACTIVE) return { bg: "#DCFCE7", fg: "#166534" };
+    return { bg: "#E5E7EB", fg: "#374151" };
   };
 
   const renderPetImage = (imageUrl, height = 160) => {
@@ -353,26 +490,17 @@ export default function AdminUserReports() {
   return (
     <SafeAreaView style={styles.screen}>
       <View style={styles.header}>
-        <Text style={styles.title}>📌 User Reports</Text>
+        <View>
+          <Text style={styles.title}>🚨 User Reports</Text>
+          <Text style={{ fontSize: 12, color: "#6B7280", fontWeight: "800" }}>
+            จัดการรายงานจากผู้ใช้
+          </Text>
+        </View>
+
         <TouchableOpacity style={styles.refreshBtn} onPress={fetchReports}>
           <Ionicons name="refresh" size={18} color="#111827" />
           <Text style={styles.refreshText}>รีเฟรช</Text>
         </TouchableOpacity>
-      </View>
-
-      <View style={styles.searchBox}>
-        <Ionicons name="search" size={18} color="#6B7280" />
-        <TextInput
-          value={query}
-          onChangeText={setQuery}
-          placeholder="ค้นหา reason/ชื่อผู้รายงาน/ชื่อสัตว์/pet_id..."
-          style={styles.searchInput}
-        />
-        {!!query && (
-          <TouchableOpacity onPress={() => setQuery("")}>
-            <Ionicons name="close-circle" size={20} color="#9CA3AF" />
-          </TouchableOpacity>
-        )}
       </View>
 
       {loading ? (
@@ -382,7 +510,7 @@ export default function AdminUserReports() {
         </View>
       ) : (
         <FlatList
-          data={filtered}
+          data={reports}
           keyExtractor={(item) => item.id}
           onRefresh={onRefresh}
           refreshing={refreshing}
@@ -404,56 +532,79 @@ export default function AdminUserReports() {
           renderItem={({ item }) => {
             const b = statusBadge(item.status);
             const pet = item.pets;
+            const pb = postStatusBadge(pet?.post_status);
+
+            const petTitle = pet?.name
+              ? `🐾 ${pet.name} • ${pet?.breed || "ทั่วไป"}`
+              : item.pet_id
+                ? `🐾 Pet ID: ${item.pet_id.slice(0, 8)}...`
+                : "🐾 ไม่มี pet_id";
 
             return (
               <TouchableOpacity
                 style={styles.card}
                 onPress={() => openDetail(item)}
-                activeOpacity={0.9}
+                activeOpacity={0.92}
               >
-                {renderPetImage(pet?.image_url, 165)}
+                {renderPetImage(pet?.image_url, 155)}
 
-                <View style={{ marginTop: 12 }}>
+                <View style={{ marginTop: 12, gap: 10 }}>
                   <View style={styles.cardTop}>
-                    <View style={[styles.badge, { backgroundColor: b.bg }]}>
-                      <Text style={[styles.badgeText, { color: b.fg }]}>
-                        {item.status}
-                      </Text>
+                    <View
+                      style={{
+                        flexDirection: "row",
+                        gap: 8,
+                        flexWrap: "wrap",
+                      }}
+                    >
+                      <View style={[styles.badge, { backgroundColor: b.bg }]}>
+                        <Text style={[styles.badgeText, { color: b.fg }]}>
+                          {item.status}
+                        </Text>
+                      </View>
+
+                      <View style={[styles.badge, { backgroundColor: pb.bg }]}>
+                        <Text style={[styles.badgeText, { color: pb.fg }]}>
+                          post: {pet?.post_status || "-"}
+                        </Text>
+                      </View>
+
+                      {!!item.reason && (
+                        <View
+                          style={[styles.badge, { backgroundColor: "#F1F5F9" }]}
+                        >
+                          <Text
+                            style={[styles.badgeText, { color: "#0F172A" }]}
+                          >
+                            {item.reason}
+                          </Text>
+                        </View>
+                      )}
                     </View>
+
                     <Text style={styles.dateText}>
-                      {new Date(item.created_at).toLocaleString("th-TH")}
+                      {formatThaiDateTime(item.created_at)}
                     </Text>
                   </View>
 
                   <Text style={styles.petTitle} numberOfLines={1}>
-                    {pet?.name
-                      ? `🐾 ${pet.name} • ${pet?.breed || "ทั่วไป"}`
-                      : item.pet_id
-                        ? `🐾 Pet ID: ${item.pet_id.slice(0, 8)}...`
-                        : "🐾 ไม่มี pet_id"}
-                  </Text>
-
-                  <Text style={styles.reasonText} numberOfLines={1}>
-                    เหตุผล: {item.reason || "-"}
+                    {petTitle}
                   </Text>
 
                   <Text style={styles.detailText} numberOfLines={2}>
                     {item.details || "-"}
                   </Text>
 
-                  <View style={{ marginTop: 10, gap: 6 }}>
-                    <View style={styles.userPreview}>
-                      <Text style={styles.userPreviewLabel}>ผู้รายงาน:</Text>
-                      <Text style={styles.userPreviewName} numberOfLines={1}>
-                        {item?.reporter?.full_name || "ไม่พบชื่อ"}
-                      </Text>
-                    </View>
-                    <View style={styles.userPreview}>
-                      <Text style={styles.userPreviewLabel}>ถูกรายงาน:</Text>
-                      <Text style={styles.userPreviewName} numberOfLines={1}>
-                        {item?.reported?.full_name || "ไม่พบชื่อ"}
-                      </Text>
-                    </View>
+                  <View style={styles.userInline}>
+                    <Text style={styles.userInlineLabel}>ผู้รายงาน</Text>
+                    <Text style={styles.userInlineValue} numberOfLines={1}>
+                      {item?.reporter?.full_name || "ไม่พบชื่อ"}
+                    </Text>
+                    <Text style={styles.userInlineArrow}>→</Text>
+                    <Text style={styles.userInlineLabel}>ถูกรายงาน</Text>
+                    <Text style={styles.userInlineValue} numberOfLines={1}>
+                      {item?.reported?.full_name || "ไม่พบชื่อ"}
+                    </Text>
                   </View>
                 </View>
               </TouchableOpacity>
@@ -462,133 +613,226 @@ export default function AdminUserReports() {
         />
       )}
 
-      {/* ===== Modal Detail ===== */}
+      {/* ===== Modal Detail (Improved UX) ===== */}
       <Modal visible={showModal} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>รายละเอียดรายงาน</Text>
+              <View style={{ gap: 2 }}>
+                <Text style={styles.modalTitle}>รายละเอียดรายงาน</Text>
+                <Text style={styles.modalSub}>
+                  {selected?.created_at
+                    ? formatThaiDateTime(selected.created_at)
+                    : ""}
+                </Text>
+              </View>
+
               <TouchableOpacity
                 onPress={() => (!saving ? setShowModal(false) : null)}
                 disabled={saving}
               >
-                <Ionicons name="close-circle" size={32} color="#D1D5DB" />
+                <Ionicons name="close" size={24} color="#111827" />
               </TouchableOpacity>
             </View>
 
-            <View style={{ padding: 16, gap: 10 }}>
-              {renderPetImage(selected?.pets?.image_url, 210)}
+            <ScrollView
+              style={{ padding: 16 }}
+              contentContainerStyle={{ gap: 14, paddingBottom: 120 }}
+              showsVerticalScrollIndicator={false}
+            >
+              <Section title="โพสต์">
+                {renderPetImage(selected?.pets?.image_url, 220)}
 
-              <Text style={styles.label}>Report ID</Text>
-              <Text style={styles.mono}>{selected?.id}</Text>
+                <Row
+                  label="Pet"
+                  value={
+                    selected?.pets?.name
+                      ? `${selected.pets.name} • ${
+                          selected?.pets?.breed || "ทั่วไป"
+                        }`
+                      : selected?.pet_id
+                        ? `ไม่พบข้อมูลโพสต์ (pet_id: ${selected.pet_id})`
+                        : "ไม่มี pet_id"
+                  }
+                />
 
-              <Text style={styles.label}>Pet</Text>
-              <Text style={styles.value}>
-                {selected?.pets?.name
-                  ? `${selected.pets.name} • ${selected?.pets?.breed || "ทั่วไป"}`
-                  : selected?.pet_id
-                    ? `ไม่พบข้อมูลโพสต์ (pet_id: ${selected.pet_id})`
-                    : "ไม่มี pet_id"}
-              </Text>
-
-              <Text style={styles.label}>ผู้รายงาน</Text>
-              <View style={styles.userBox}>
-                <Text style={styles.userName}>
-                  {selected?.reporter?.full_name || "ไม่พบชื่อ"}
-                </Text>
-                <Text style={styles.mono} numberOfLines={1}>
-                  {selected?.reporter_clerk_id || "-"}
-                </Text>
-              </View>
-
-              <Text style={styles.label}>ถูกรายงาน</Text>
-              <View style={styles.userBox}>
-                <Text style={styles.userName}>
-                  {selected?.reported?.full_name || "ไม่พบชื่อ"}
-                </Text>
-                <Text style={styles.mono} numberOfLines={1}>
-                  {selected?.reported_clerk_id || "-"}
-                </Text>
-              </View>
-
-              <Text style={styles.label}>Reason</Text>
-              <Text style={styles.value}>{selected?.reason || "-"}</Text>
-
-              <Text style={styles.label}>Details</Text>
-              <Text style={styles.value}>{selected?.details || "-"}</Text>
-
-              <Text style={styles.label}>Status</Text>
-              <View style={styles.statusRow}>
-                {STATUS_OPTIONS.map((st) => {
-                  const active = editingStatus === st;
-                  return (
-                    <TouchableOpacity
-                      key={st}
+                <View
+                  style={{
+                    flexDirection: "row",
+                    alignItems: "center",
+                    gap: 8,
+                  }}
+                >
+                  <Text style={styles.rowLabel}>Post status</Text>
+                  <View
+                    style={[
+                      styles.badge,
+                      {
+                        backgroundColor: postStatusBadge(
+                          selected?.pets?.post_status,
+                        ).bg,
+                      },
+                    ]}
+                  >
+                    <Text
                       style={[
-                        styles.statusBtn,
-                        active && styles.statusBtnActive,
+                        styles.badgeText,
+                        {
+                          color: postStatusBadge(selected?.pets?.post_status)
+                            .fg,
+                        },
                       ]}
-                      onPress={() => setEditingStatus(st)}
+                    >
+                      {selected?.pets?.post_status || "-"}
+                    </Text>
+                  </View>
+                </View>
+              </Section>
+
+              <Section title="ผู้เกี่ยวข้อง">
+                <Row
+                  label="ผู้รายงาน"
+                  value={selected?.reporter?.full_name || "ไม่พบชื่อ"}
+                />
+                <Row
+                  label="reporter_clerk_id"
+                  value={selected?.reporter_clerk_id}
+                  mono
+                />
+                <View style={styles.divider} />
+                <Row
+                  label="ถูกรายงาน"
+                  value={selected?.reported?.full_name || "ไม่พบชื่อ"}
+                />
+                <Row
+                  label="reported_clerk_id"
+                  value={selected?.reported_clerk_id}
+                  mono
+                />
+              </Section>
+
+              <Section title="รายละเอียดรายงาน">
+                <Row label="Report ID" value={selected?.id} mono />
+                <Row label="Reason" value={selected?.reason} />
+
+                <Text style={styles.rowLabel}>Details</Text>
+                <Text style={styles.longValue}>{selected?.details || "-"}</Text>
+
+                <Text style={styles.rowLabel}>Status</Text>
+                <View style={styles.statusRow}>
+                  {STATUS_OPTIONS.map((st) => {
+                    const active = editingStatus === st;
+                    return (
+                      <TouchableOpacity
+                        key={st}
+                        style={[
+                          styles.statusChip,
+                          active && styles.statusChipActive,
+                          saving && { opacity: 0.7 },
+                        ]}
+                        onPress={() => setEditingStatus(st)}
+                        disabled={saving}
+                      >
+                        <Text
+                          style={[
+                            styles.statusChipText,
+                            active && styles.statusChipTextActive,
+                          ]}
+                        >
+                          {st}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {editingStatus === "dismissed" && (
+                  <>
+                    <Text style={styles.rowLabel}>เหตุผลที่ dismiss</Text>
+                    <TextInput
+                      value={dismissReason}
+                      onChangeText={setDismissReason}
+                      placeholder="เช่น ตรวจสอบแล้วไม่พบความผิด / หลักฐานไม่พอ / สแปมรายงาน"
+                      multiline
+                      editable={!saving}
+                      style={styles.noteInput}
+                    />
+
+                    <TouchableOpacity
+                      style={[styles.dangerBtn, saving && { opacity: 0.6 }]}
+                      onPress={dismissAsFalseReport}
                       disabled={saving}
                     >
-                      <Text
-                        style={[
-                          styles.statusText,
-                          active && styles.statusTextActive,
-                        ]}
-                      >
-                        {st}
-                      </Text>
+                      <Ionicons name="close-circle" size={16} color="#fff" />
+                      <Text style={styles.dangerBtnText}>ยืนยัน Dismiss</Text>
                     </TouchableOpacity>
-                  );
-                })}
-              </View>
+                  </>
+                )}
 
-              <Text style={styles.label}>Admin note</Text>
-              <TextInput
-                value={editingNote}
-                onChangeText={setEditingNote}
-                placeholder="บันทึกของแอดมิน..."
-                multiline
-                editable={!saving}
-                style={styles.noteInput}
-              />
-
-              <View style={styles.modalFooter}>
-                <TouchableOpacity
-                  style={styles.cancelBtn}
-                  onPress={() => setShowModal(false)}
-                  disabled={saving}
-                >
-                  <Text style={styles.cancelText}>ปิด</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[
-                    styles.cancelBtn,
-                    { backgroundColor: "#FEE2E2" },
-                    saving && { opacity: 0.6 },
-                  ]}
-                  onPress={deletePetPost}
-                  disabled={saving}
-                >
-                  <Text style={[styles.cancelText, { color: "#991B1B" }]}>
-                    ลบโพสต์
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[styles.saveBtn, saving && { opacity: 0.6 }]}
-                  onPress={saveUpdate}
-                  disabled={saving}
-                >
-                  <Text style={styles.saveText}>
-                    {saving ? "กำลังบันทึก..." : "บันทึก"}
-                  </Text>
-                </TouchableOpacity>
-              </View>
+                <Text style={styles.rowLabel}>Admin note</Text>
+                <TextInput
+                  value={editingNote}
+                  onChangeText={setEditingNote}
+                  placeholder="บันทึกของแอดมิน..."
+                  multiline
+                  editable={!saving}
+                  style={styles.noteInput}
+                />
+              </Section>
 
               <View style={{ height: 12 }} />
+            </ScrollView>
+
+            {/* ✅ Sticky Action Bar */}
+            <View style={styles.actionBar}>
+              <TouchableOpacity
+                style={[
+                  styles.actionBarBtn,
+                  { backgroundColor: "#111827" },
+                  saving && { opacity: 0.6 },
+                ]}
+                onPress={hidePetPost}
+                disabled={saving}
+              >
+                <Ionicons name="eye-off" size={16} color="#fff" />
+                <Text style={styles.actionBarText}>ซ่อนโพสต์</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.actionBarBtn,
+                  { backgroundColor: "#16A34A" },
+                  saving && { opacity: 0.6 },
+                ]}
+                onPress={restorePetPost}
+                disabled={saving}
+              >
+                <Ionicons name="refresh" size={16} color="#fff" />
+                <Text style={styles.actionBarText}>คืนโพสต์</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.actionBarBtn,
+                  { backgroundColor: "#DC2626" },
+                  saving && { opacity: 0.6 },
+                ]}
+                onPress={deletePetPost}
+                disabled={saving}
+              >
+                <Ionicons name="trash" size={16} color="#fff" />
+                <Text style={styles.actionBarText}>ซ่อนแทนลบ</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.saveBtn, saving && { opacity: 0.6 }]}
+                onPress={saveUpdate}
+                disabled={saving}
+              >
+                <Text style={styles.saveText}>
+                  {saving ? "กำลังบันทึก..." : "บันทึก"}
+                </Text>
+              </TouchableOpacity>
             </View>
           </View>
         </View>
@@ -623,21 +867,6 @@ const styles = StyleSheet.create({
   },
   refreshText: { fontWeight: "800", color: "#111827" },
 
-  searchBox: {
-    marginHorizontal: 16,
-    marginBottom: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    borderRadius: 14,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-  },
-  searchInput: { flex: 1, fontWeight: "600", color: "#111827" },
-
   card: {
     backgroundColor: "#FFFFFF",
     borderRadius: 16,
@@ -661,52 +890,45 @@ const styles = StyleSheet.create({
   cardTop: {
     flexDirection: "row",
     justifyContent: "space-between",
-    alignItems: "center",
+    alignItems: "flex-start",
   },
   badge: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999 },
   badgeText: { fontWeight: "900", fontSize: 12 },
   dateText: { color: "#6B7280", fontWeight: "700", fontSize: 11 },
 
   petTitle: {
-    marginTop: 10,
+    marginTop: 2,
     fontWeight: "900",
     fontSize: 15,
     color: "#0F172A",
   },
 
-  reasonText: {
-    marginTop: 8,
-    fontWeight: "900",
-    fontSize: 14,
-    color: "#111827",
-  },
   detailText: {
-    marginTop: 6,
     color: "#374151",
     fontWeight: "600",
     lineHeight: 18,
   },
 
-  userPreview: {
+  userInline: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 6,
     backgroundColor: "#F9FAFB",
+    borderRadius: 12,
     paddingHorizontal: 10,
     paddingVertical: 8,
-    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    flexWrap: "wrap",
   },
-  userPreviewLabel: {
+  userInlineLabel: { fontSize: 12, fontWeight: "900", color: "#6B7280" },
+  userInlineValue: {
+    maxWidth: 140,
     fontSize: 12,
     fontWeight: "900",
-    color: "#6B7280",
-  },
-  userPreviewName: {
-    flex: 1,
-    fontSize: 13,
-    fontWeight: "800",
     color: "#111827",
   },
+  userInlineArrow: { fontSize: 12, fontWeight: "900", color: "#94A3B8" },
 
   modalOverlay: {
     flex: 1,
@@ -718,6 +940,7 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,
     maxHeight: "92%",
+    overflow: "hidden",
   },
   modalHeader: {
     padding: 16,
@@ -728,40 +951,49 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   modalTitle: { fontSize: 16, fontWeight: "900", color: "#111827" },
+  modalSub: { fontSize: 12, fontWeight: "800", color: "#6B7280" },
 
-  label: { marginTop: 6, color: "#6B7280", fontWeight: "800" },
+  section: {
+    backgroundColor: "#FFFFFF",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    borderRadius: 16,
+    padding: 14,
+    gap: 10,
+  },
+  sectionTitle: {
+    fontSize: 13,
+    fontWeight: "900",
+    color: "#0F172A",
+  },
+
+  divider: { height: 1, backgroundColor: "#E5E7EB", marginVertical: 6 },
+
+  row: { flexDirection: "row", gap: 10, alignItems: "flex-start" },
+  rowLabel: { width: 120, color: "#6B7280", fontWeight: "900", fontSize: 12 },
+  rowValue: { flex: 1, color: "#111827", fontWeight: "800", fontSize: 13 },
+
   mono: {
     fontFamily: "Courier",
     color: "#111827",
     fontWeight: "700",
     fontSize: 12,
   },
-  value: { color: "#111827", fontWeight: "700" },
 
-  userBox: {
-    padding: 12,
-    backgroundColor: "#F9FAFB",
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    gap: 4,
-  },
-  userName: {
-    fontSize: 15,
-    fontWeight: "900",
-    color: "#111827",
-  },
+  longValue: { color: "#111827", fontWeight: "700", lineHeight: 19 },
 
   statusRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 6 },
-  statusBtn: {
+  statusChip: {
     paddingHorizontal: 12,
     paddingVertical: 8,
-    borderRadius: 12,
+    borderRadius: 999,
     backgroundColor: "#F3F4F6",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
   },
-  statusBtnActive: { backgroundColor: "#111827" },
-  statusText: { fontWeight: "900", color: "#374151" },
-  statusTextActive: { color: "#FFFFFF" },
+  statusChipActive: { backgroundColor: "#111827", borderColor: "#111827" },
+  statusChipText: { fontWeight: "900", color: "#374151" },
+  statusChipTextActive: { color: "#FFFFFF" },
 
   noteInput: {
     minHeight: 90,
@@ -775,17 +1007,41 @@ const styles = StyleSheet.create({
     textAlignVertical: "top",
   },
 
-  modalFooter: { flexDirection: "row", gap: 10, marginTop: 14 },
-  cancelBtn: {
-    flex: 1,
-    padding: 14,
+  dangerBtn: {
+    marginTop: 8,
+    paddingVertical: 12,
     borderRadius: 14,
-    backgroundColor: "#F3F4F6",
+    backgroundColor: "#DC2626",
     alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 8,
   },
-  cancelText: { fontWeight: "900", color: "#374151" },
+  dangerBtnText: { fontWeight: "900", color: "#fff" },
+
+  actionBar: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    padding: 12,
+    backgroundColor: "rgba(255,255,255,0.96)",
+    borderTopWidth: 1,
+    borderTopColor: "#E5E7EB",
+    gap: 10,
+  },
+  actionBarBtn: {
+    width: "100%",
+    paddingVertical: 12,
+    borderRadius: 14,
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "center",
+    gap: 8,
+  },
+  actionBarText: { fontWeight: "900", color: "#fff" },
+
   saveBtn: {
-    flex: 1,
     padding: 14,
     borderRadius: 14,
     backgroundColor: "#111827",

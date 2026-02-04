@@ -15,6 +15,9 @@ import {
 } from "react-native";
 import { supabase } from "../../../config/supabaseClient";
 
+// ✅ เพิ่ม Header (ปรับ path ให้ตรงกับโปรเจกต์คุณ)
+import Header from "../../../components/Home/header";
+
 export default function VolunteerAdoptionList() {
   const { user } = useUser();
   const router = useRouter();
@@ -36,6 +39,7 @@ export default function VolunteerAdoptionList() {
 
   const [availableCategories, setAvailableCategories] = useState([]);
   const [availableBreeds, setAvailableBreeds] = useState([]);
+  const [availableBreedsAll, setAvailableBreedsAll] = useState([]); // ✅ NEW
 
   // ✅ ซ่อน adopted (และกัน adopted=true เผื่อใช้ด้วย)
   const isHiddenPet = (p) => {
@@ -68,12 +72,17 @@ export default function VolunteerAdoptionList() {
         "ทั้งหมด",
         ...new Set(petsData.map((p) => p.category).filter(Boolean)),
       ];
+
+      // ✅ เก็บสายพันธุ์รวมทั้งหมดไว้ก่อน
       const breeds = [
         "ทั้งหมด",
         ...new Set(petsData.map((p) => p.breed).filter(Boolean)),
       ];
 
       setAvailableCategories(categories);
+
+      // ✅ NEW: เก็บ breeds ทั้งหมด + ตั้งค่าเริ่มต้นให้ availableBreeds ด้วย
+      setAvailableBreedsAll(breeds);
       setAvailableBreeds(breeds);
     } catch (error) {
       console.error("Error fetching pets:", error);
@@ -102,8 +111,6 @@ export default function VolunteerAdoptionList() {
       result = result.filter((pet) => pet.breed === filters.breed);
     }
 
-    // ❌ ตัด filter status ออกหมดแล้ว
-
     setFilteredPets(result);
   };
 
@@ -129,6 +136,37 @@ export default function VolunteerAdoptionList() {
   useEffect(() => {
     applyFilters();
   }, [filters, pets]);
+
+  // ✅ NEW: กรอง “สายพันธุ์” ตามประเภทสัตว์ที่เลือก
+  useEffect(() => {
+    // ถ้า category = ทั้งหมด -> ใช้รายการทั้งหมด
+    if (filters.category === "ทั้งหมด") {
+      setAvailableBreeds(availableBreedsAll);
+      return;
+    }
+
+    // ดึงเฉพาะ breeds ของ category ที่เลือก
+    const breedsByCategory = [
+      "ทั้งหมด",
+      ...new Set(
+        pets
+          .filter((p) => !isHiddenPet(p))
+          .filter((p) => p.category === filters.category)
+          .map((p) => p.breed)
+          .filter(Boolean),
+      ),
+    ];
+
+    setAvailableBreeds(breedsByCategory);
+
+    // ถ้า breed ที่เลือกอยู่ ไม่อยู่ใน list ใหม่ -> รีเซ็ตเป็นทั้งหมด
+    if (
+      filters.breed !== "ทั้งหมด" &&
+      !breedsByCategory.includes(filters.breed)
+    ) {
+      setFilters((prev) => ({ ...prev, breed: "ทั้งหมด" }));
+    }
+  }, [filters.category, pets, availableBreedsAll]);
 
   const handleRefresh = () => {
     setRefreshing(true);
@@ -161,7 +199,6 @@ export default function VolunteerAdoptionList() {
   };
 
   const renderPetItem = ({ item }) => {
-    // ✅ กันหลุดสุดท้าย: ถ้า adopted อย่า render
     if (isHiddenPet(item)) return null;
 
     const gender = getGenderIcon(item.sex);
@@ -193,8 +230,6 @@ export default function VolunteerAdoptionList() {
                 {item.category || "ไม่ระบุ"}
               </Text>
             </View>
-
-            {/* ❌ เอา status badge ออกแล้ว */}
           </View>
         </View>
 
@@ -236,6 +271,9 @@ export default function VolunteerAdoptionList() {
 
   return (
     <SafeAreaView style={styles.screen}>
+      {/* ✅ Header fixed on top */}
+      <Header />
+
       <FlatList
         data={filteredPets}
         renderItem={renderPetItem}
@@ -475,8 +513,6 @@ export default function VolunteerAdoptionList() {
                   ))}
                 </View>
               </View>
-
-              {/* ❌ ตัด "สถานะ" ออกแล้ว */}
             </ScrollView>
 
             <View style={styles.modalFooter}>
@@ -511,7 +547,7 @@ export default function VolunteerAdoptionList() {
   );
 }
 
-/* ✅ Styles: เหมือนเดิม ใช้ของคุณต่อได้ */
+/* ✅ Styles */
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#FAFAFA" },
   listContainer: { paddingBottom: 100 },
@@ -521,7 +557,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     alignItems: "flex-start",
     paddingHorizontal: 20,
-    paddingTop: 45,
+    paddingTop: 16,
     paddingBottom: 12,
   },
   titleArea: { flex: 1 },
@@ -664,11 +700,6 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   categoryBadgeText: { fontWeight: "800", color: "#8B5CF6", fontSize: 12 },
-
-  // ✅ statusBadge / statusDot / statusBadgeText จะลบออกก็ได้ (ไม่ใช้แล้ว)
-  // statusBadge: {...}
-  // statusDot: {...}
-  // statusBadgeText: {...}
 
   petInfo: { padding: 16 },
   petHeader: {

@@ -2,13 +2,14 @@
 // VolunteerHome.jsx - Stable Realtime + Reliable Sync (FULL)
 // ✅ Fixed: fetchUnreadCount now uses volunteerUuid (Supabase UUID) instead of userId (Clerk ID)
 // ✅ Fixed: Realtime notifications listener uses volunteerUuid
-// ✅ UPDATED: "ช่วยเหลือไม่สำเร็จ" shows TOTAL failed cases (no 7-day filter)
+// ✅ UPDATED: Tile 4 changed from "ช่วยเหลือไม่สำเร็จ" -> "อัตราความสำเร็จ" (percentage KPI)
 // ✅ UPDATED: Removed LIVE indicator + Removed "Realtime: ..." text in UI (realtime still runs in background)
+// ✅ UPDATED: Greeting shows user's name (Clerk first, fallback to Supabase users.full_name)
 
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   AppState,
@@ -61,7 +62,8 @@ export default function VolunteerHome() {
     totalCases: 0,
     activeReports: 0,
     completedCases: 0,
-    failedCases: 0, // ✅ total failed (no 7-day filter)
+    failedCases: 0, // keep for internal use
+    successRate: 0, // ✅ KPI: % completed / total
   });
 
   const [statsLoading, setStatsLoading] = useState(true);
@@ -70,6 +72,9 @@ export default function VolunteerHome() {
 
   // ✅ volunteer uuid in DB (users.id)
   const [volunteerUuid, setVolunteerUuid] = useState(null);
+
+  // ✅ show name in greeting (fallback to Supabase full_name)
+  const [displayName, setDisplayName] = useState("");
 
   // ✅ keep latest realtimeStatus
   const realtimeStatusRef = useRef("disconnected");
@@ -152,6 +157,30 @@ export default function VolunteerHome() {
     },
     [userId],
   );
+
+  // ✅ fetch Supabase name (users.full_name)
+  const fetchMyProfileName = useCallback(async () => {
+    try {
+      if (!userId) return;
+
+      const supabase = await getSupabase();
+      if (!supabase) return;
+
+      const { data, error } = await supabase
+        .from("users")
+        .select("full_name")
+        .eq("clerk_id", userId)
+        .single();
+
+      if (error) return;
+      const name = (data?.full_name || "").trim();
+      if (!mountedRef.current) return;
+
+      if (name) setDisplayName(name);
+    } catch (e) {
+      console.log("❌ fetchMyProfileName error:", e);
+    }
+  }, [userId, getSupabase]);
 
   const fetchUrgentCount = useCallback(async () => {
     try {
@@ -260,11 +289,16 @@ export default function VolunteerHome() {
 
       const totalCases = completedCases + activeReports + failedCases;
 
+      // ✅ KPI: completed / total (รวม in_progress ตามที่มี stats เดิม)
+      const successRate =
+        totalCases > 0 ? Math.round((completedCases / totalCases) * 100) : 0;
+
       setStats({
         totalCases,
         activeReports,
         completedCases,
         failedCases,
+        successRate,
       });
 
       setLastSyncLabel(formatTimeLabel());
@@ -502,11 +536,28 @@ export default function VolunteerHome() {
 
   /* --------------------- Init + Periodic Sync ------------------ */
 
+  // ✅ Greeting: Clerk name first, fallback to Supabase full_name
+  const clerkName = useMemo(() => {
+    const first = user?.firstName?.trim();
+    const full = user?.fullName?.trim();
+    return first || full || "";
+  }, [user?.firstName, user?.fullName]);
+
+  const greetingName = (clerkName || displayName || "อาสาสมัคร").trim();
+
   useEffect(() => {
     mountedRef.current = true;
 
     const init = async () => {
       if (!userId) return;
+
+      // ✅ try fetch name from Supabase (fallback)
+      if (!clerkName) {
+        await fetchMyProfileName();
+      } else {
+        // keep displayName in sync if Clerk has name
+        if (mountedRef.current) setDisplayName(clerkName);
+      }
 
       // initial fetch
       await fetchUrgentCount();
@@ -610,7 +661,8 @@ export default function VolunteerHome() {
       <View style={styles.top}>
         <View style={styles.topRow}>
           <View style={{ flex: 1 }}>
-            <Text style={styles.hello}>สวัสดี, อาสาสมัคร 👋</Text>
+            {/* ✅ Changed greeting to show name */}
+            <Text style={styles.hello}>สวัสดี, {greetingName} 👋</Text>
 
             <View style={styles.subRow}>
               <Text style={styles.sub}>
@@ -619,7 +671,6 @@ export default function VolunteerHome() {
               </Text>
             </View>
 
-            {/* ✅ Removed realtime connection text */}
             <Text style={styles.syncHint}>อัปเดตล่าสุด {lastSyncLabel}</Text>
           </View>
 
@@ -751,12 +802,13 @@ export default function VolunteerHome() {
             unit="เคส"
             tone="blue"
           />
+          {/* ✅ Replaced: failedCases tile -> successRate KPI */}
           <StatTile
-            icon="close-circle-outline"
-            title="ช่วยเหลือไม่สำเร็จ"
-            value={stats.failedCases}
-            unit="เคส"
-            tone="pink"
+            icon="analytics-outline"
+            title="อัตราความสำเร็จ"
+            value={stats.successRate}
+            unit="%"
+            tone="green"
           />
         </View>
       </View>

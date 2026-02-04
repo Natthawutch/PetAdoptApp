@@ -12,48 +12,57 @@ import {
 import { createClerkSupabaseClient } from "../../../config/supabaseClient";
 import { fetchDashboardStats } from "../../../lib/dashboardApi";
 
-const buildStats = (s = {}) => [
-  {
-    key: "totalUsers",
-    title: "ผู้ใช้ทั้งหมด",
-    number: s.totalUsers ?? 0,
-    icon: "people-outline",
-    color: "#3b82f6",
-    bgColor: "#dbeafe",
-  },
-  {
-    key: "volunteers",
-    title: "อาสาสมัคร",
-    number: s.volunteers ?? 0,
-    icon: "hand-left-outline",
-    color: "#ec4899",
-    bgColor: "#fce7f3",
-  },
-  {
-    key: "animalsLookingForHome",
-    title: "สัตว์กำลังหาบ้าน",
-    number: s.animalsLookingForHome ?? 0,
-    icon: "paw-outline",
-    color: "#f59e0b",
-    bgColor: "#fef3c7",
-  },
-  {
-    key: "adoptionsSuccess",
-    title: "รับเลี้ยงสำเร็จ",
-    number: s.adoptionsSuccess ?? 0,
-    icon: "heart-outline",
-    color: "#10b981",
-    bgColor: "#d1fae5",
-  },
-  {
-    key: "pendingApprovals",
-    title: "ผู้ใช้ที่ยังไม่ได้ยืนยันตัวตน",
-    number: s.pendingApprovals ?? 0,
-    icon: "time-outline",
-    color: "#8b5cf6",
-    bgColor: "#ede9fe",
-  },
-];
+// ✅ เปลี่ยน "ผู้ใช้ทั้งหมด" -> "ผู้ใช้ทั่วไป"
+// ✅ นับผู้ใช้ทั่วไป = totalUsers - volunteers (ไม่ทับอาสา)
+const buildStats = (s = {}) => {
+  const totalUsers = s.totalUsers ?? 0;
+  const volunteers = s.volunteers ?? 0;
+
+  const generalUsers = Math.max(totalUsers - volunteers, 0);
+
+  return [
+    {
+      key: "generalUsers",
+      title: "ผู้ใช้ทั่วไป",
+      number: generalUsers,
+      icon: "people-outline",
+      color: "#3b82f6",
+      bgColor: "#dbeafe",
+    },
+    {
+      key: "volunteers",
+      title: "อาสาสมัคร",
+      number: volunteers,
+      icon: "hand-left-outline",
+      color: "#ec4899",
+      bgColor: "#fce7f3",
+    },
+    {
+      key: "animalsLookingForHome",
+      title: "สัตว์กำลังหาบ้าน",
+      number: s.animalsLookingForHome ?? 0,
+      icon: "paw-outline",
+      color: "#f59e0b",
+      bgColor: "#fef3c7",
+    },
+    {
+      key: "adoptionsSuccess",
+      title: "รับเลี้ยงสำเร็จ",
+      number: s.adoptionsSuccess ?? 0,
+      icon: "heart-outline",
+      color: "#10b981",
+      bgColor: "#d1fae5",
+    },
+    {
+      key: "pendingApprovals",
+      title: "ผู้ใช้ที่ยังไม่ได้ยืนยันตัวตน",
+      number: s.pendingApprovals ?? 0,
+      icon: "time-outline",
+      color: "#8b5cf6",
+      bgColor: "#ede9fe",
+    },
+  ];
+};
 
 const Card = ({ children, style }) => (
   <View style={[styles.card, style]}>{children}</View>

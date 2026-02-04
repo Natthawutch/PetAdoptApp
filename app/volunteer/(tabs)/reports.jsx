@@ -75,14 +75,14 @@ function upsertSortedByCreatedAtDesc(list, item) {
 }
 
 /* -------------------------- Header (memo) -------------------------- */
+/**
+ * ✅ UPDATED: Removed LIVE indicator + Removed connection status text UI
+ * Realtime still runs in background.
+ */
 const Header = memo(function Header({
   filters,
   selectedFilter,
   setSelectedFilter,
-  realtimeStatus,
-  pulseAnim,
-  getConnectionStatusColor,
-  getConnectionStatusText,
   justCompletedCount,
   clearJustCompletedBanner,
 }) {
@@ -90,38 +90,14 @@ const Header = memo(function Header({
     <View style={styles.header}>
       <View style={styles.titleContainer}>
         <View style={styles.titleRow}>
-          <Text style={styles.title}>รายงานสัตว์</Text>
-
-          {realtimeStatus === "SUBSCRIBED" && (
-            <Animated.View
-              style={[
-                styles.liveIndicator,
-                { transform: [{ scale: pulseAnim }] },
-              ]}
-            >
-              <View
-                style={[
-                  styles.liveDot,
-                  { backgroundColor: getConnectionStatusColor() },
-                ]}
-              />
-              <Text style={styles.liveText}>LIVE</Text>
-            </Animated.View>
-          )}
+          <Text style={styles.title}>เคสช่วยเหลือ</Text>
         </View>
 
         <View style={styles.subtitleRow}>
           <Text style={styles.subtitle}>รอคนรับ + เคสของคุณเท่านั้น</Text>
 
-          <View style={styles.statusDot}>
-            <View
-              style={[
-                styles.statusIndicator,
-                { backgroundColor: getConnectionStatusColor() },
-              ]}
-            />
-            <Text style={styles.statusText}>{getConnectionStatusText()}</Text>
-          </View>
+          {/* ✅ Removed status dot + "เชื่อมต่อแล้ว" text */}
+          <View style={styles.statusDot} />
         </View>
 
         {justCompletedCount > 0 && (
@@ -724,6 +700,7 @@ export default function VolunteerReports() {
     });
   }, [reports, selectedFilter, searchQuery]);
 
+  // ✅ kept for internal logic (realtime), UI removed
   const getConnectionStatusColor = useCallback(() => {
     switch (realtimeStatus) {
       case "SUBSCRIBED":
@@ -736,6 +713,7 @@ export default function VolunteerReports() {
     }
   }, [realtimeStatus]);
 
+  // ✅ kept for internal logic (realtime), UI removed
   const getConnectionStatusText = useCallback(() => {
     switch (realtimeStatus) {
       case "SUBSCRIBED":
@@ -904,10 +882,6 @@ export default function VolunteerReports() {
             filters={filters}
             selectedFilter={selectedFilter}
             setSelectedFilter={setSelectedFilter}
-            realtimeStatus={realtimeStatus}
-            pulseAnim={pulseAnim}
-            getConnectionStatusColor={getConnectionStatusColor}
-            getConnectionStatusText={getConnectionStatusText}
             justCompletedCount={justCompletedCount}
             clearJustCompletedBanner={clearJustCompletedBanner}
           />
@@ -984,18 +958,6 @@ const styles = StyleSheet.create({
   statusDot: { flexDirection: "row", alignItems: "center", gap: 6 },
   statusIndicator: { width: 6, height: 6, borderRadius: 3 },
   statusText: { fontSize: 11, color: "#94a3b8" },
-
-  liveIndicator: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#f0fdf4",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    gap: 6,
-  },
-  liveDot: { width: 8, height: 8, borderRadius: 4 },
-  liveText: { fontSize: 11, fontWeight: "700", color: "#16a34a" },
 
   completedBanner: {
     marginTop: 12,
