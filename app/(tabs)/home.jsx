@@ -1,7 +1,7 @@
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   FlatList,
@@ -26,13 +26,26 @@ export default function Home() {
   const { getToken } = useAuth();
   const router = useRouter();
 
+  // =========================
+  // ✅ PAGINATION SETTINGS
+  // =========================
+  const PAGE_SIZE = 10;
+  const VISIBLE_ADOPTION_STATUS = "available";
+
+  // =========================
+  // ✅ PET LIST STATE
+  // =========================
   const [pets, setPets] = useState([]);
   const [filteredPets, setFilteredPets] = useState([]);
+
   const [loadingPets, setLoadingPets] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [showFilterModal, setShowFilterModal] = useState(false);
 
-  const VISIBLE_ADOPTION_STATUS = "available";
+  const [page, setPage] = useState(0);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  const [showFilterModal, setShowFilterModal] = useState(false);
 
   const [filters, setFilters] = useState({
     category: "ทั้งหมด",
@@ -46,13 +59,6 @@ export default function Home() {
   // ✅ REPORT (user_reports)
   // =========================
   const [showReportModal, setShowReportModal] = useState(false);
-
-  // shape:
-  // {
-  //   pet_id,
-  //   reported_clerk_id,
-  //   preview: { name, breed, category, image_url, owner_full_name, owner_avatar_url }
-  // }
   const [reportTarget, setReportTarget] = useState(null);
 
   const [reportReason, setReportReason] = useState("สแปม/หลอกลวง");
@@ -68,6 +74,8 @@ export default function Home() {
     "อื่นๆ",
   ];
 
+  const onEndReachedCalledDuringMomentum = useRef(false);
+
   const getAuthedSupabase = async () => {
     const token = await getToken({ template: "supabase" });
     if (!token) throw new Error("Missing Clerk token (template: supabase)");
@@ -81,43 +89,73 @@ export default function Home() {
     return true;
   };
 
-  const fetchPets = async () => {
-    setLoadingPets(true);
+  // =========================
+  // ✅ FETCH PETS (PAGINATION)
+  // =========================
+  const fetchPets = async ({ reset = false } = {}) => {
+    // guard
+    if (!reset) {
+      if (loadingMore || !hasMore) return;
+      if (loadingPets || refreshing) return;
+    }
+
     try {
-      const { data, error } = await supabase
+      if (reset) {
+        setLoadingPets(true);
+        setHasMore(true);
+        setPage(0);
+      } else {
+        setLoadingMore(true);
+      }
+
+      const currentPage = reset ? 0 : page;
+      const from = currentPage * PAGE_SIZE;
+      const to = from + PAGE_SIZE - 1;
+
+      // ✅ ตัดโพสต์ตัวเองตั้งแต่ query (ลดปัญหาได้มาไม่ครบ PAGE_SIZE)
+      let q = supabase
         .from("pets")
         .select("*")
         .eq("adoption_status", "available")
         .neq("adopted", true)
-        .order("created_at", { ascending: false });
+        .order("created_at", { ascending: false })
+        .range(from, to);
 
+      if (user?.id) q = q.neq("user_id", user.id);
+
+      const { data, error } = await q;
       if (error) throw error;
 
-      const myClerkId = (user?.id ?? "").toString().trim();
+      // ✅ สำคัญ: เช็ค hasMore จาก data ก่อนกรอง (กันเคสเหลือ 9 แล้วหยุด)
+      if ((data || []).length < PAGE_SIZE) setHasMore(false);
 
-      // ✅ กรองเฉพาะที่ควรเห็น + ไม่ใช่โพสต์ของตัวเอง
-      const petsData = (data || []).filter(isVisiblePet).filter((p) => {
-        const ownerId = (p?.user_id ?? "").toString().trim();
-        if (!myClerkId) return true; // ไม่ได้ล็อกอิน -> ไม่ตัด
-        return ownerId !== myClerkId;
+      // ✅ กรองเพิ่มเฉพาะ visible (ปลอดภัยไว้ก่อน)
+      const petsData = (data || []).filter(isVisiblePet);
+
+      // ✅ อัปเดต pets + categories แบบชัวร์ (ใช้ prev)
+      setPets((prev) => {
+        const next = reset ? petsData : [...prev, ...petsData];
+
+        const categories = [
+          "ทั้งหมด",
+          ...new Set(next.map((p) => p.category).filter(Boolean)),
+        ];
+        setAvailableCategories(categories);
+
+        return next;
       });
 
-      setPets(petsData);
-
-      const categories = [
-        "ทั้งหมด",
-        ...new Set(petsData.map((p) => p.category).filter(Boolean)),
-      ];
-      setAvailableCategories(categories);
+      setPage((prev) => (reset ? 1 : prev + 1));
     } catch (error) {
       console.error("Error fetching pets:", error);
     } finally {
       setLoadingPets(false);
+      setLoadingMore(false);
       setRefreshing(false);
     }
   };
 
-  // ✅ availableBreeds คำนวณตาม "ประเภท" ที่เลือกอยู่เสมอ
+  // ✅ availableBreeds computed based on selected category from LOADED pets
   const availableBreeds = useMemo(() => {
     const base =
       filters.category === "ทั้งหมด"
@@ -148,13 +186,16 @@ export default function Home() {
     setFilteredPets(result);
   };
 
+  // =========================
+  // ✅ REALTIME (optional)
+  // =========================
   useEffect(() => {
     const channel = supabase
       .channel("pets-realtime")
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "pets" },
-        () => fetchPets(),
+        { event: "INSERT", schema: "public", table: "pets" },
+        () => fetchPets({ reset: true }),
       )
       .subscribe();
 
@@ -164,23 +205,25 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // initial load
   useEffect(() => {
-    fetchPets();
+    fetchPets({ reset: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ✅ เพิ่ม: เมื่อ user.id พร้อม -> fetch ใหม่เพื่อซ่อนโพสต์ตัวเองให้ชัวร์
+  // ensure hide my posts when user.id becomes available
   useEffect(() => {
-    if (user?.id) fetchPets();
+    if (user?.id) fetchPets({ reset: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.id]);
 
+  // apply filters when data or filters change
   useEffect(() => {
     applyFilters();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters, pets]);
 
-  // ✅ ถ้าเปลี่ยนประเภทแล้ว breed เดิมไม่อยู่ใน list ใหม่ -> reset เป็น "ทั้งหมด"
+  // if category changed and breed no longer available => reset breed
   useEffect(() => {
     if (
       filters.breed !== "ทั้งหมด" &&
@@ -193,7 +236,7 @@ export default function Home() {
 
   const handleRefresh = () => {
     setRefreshing(true);
-    fetchPets();
+    fetchPets({ reset: true });
   };
 
   const handlePetPress = (pet) => {
@@ -344,12 +387,7 @@ export default function Home() {
         admin_note: null,
       };
 
-      const { data, error } = await authed
-        .from("user_reports")
-        .insert(payload)
-        .select("id, pet_id")
-        .single();
-
+      const { error } = await authed.from("user_reports").insert(payload);
       if (error) throw error;
 
       Alert.alert(
@@ -448,6 +486,17 @@ export default function Home() {
     );
   };
 
+  const FooterLoading = () => {
+    if (!loadingMore) return null;
+    return (
+      <View style={{ paddingVertical: 20, alignItems: "center" }}>
+        <Text style={{ color: "#9CA3AF", fontWeight: "700" }}>
+          กำลังโหลดเพิ่ม...
+        </Text>
+      </View>
+    );
+  };
+
   return (
     <SafeAreaView style={styles.screen}>
       <Header />
@@ -471,6 +520,7 @@ export default function Home() {
         contentContainerStyle={styles.listContainer}
         refreshing={refreshing}
         onRefresh={handleRefresh}
+        showsVerticalScrollIndicator={false}
         ListEmptyComponent={
           !loadingPets && (
             <View style={styles.emptyBox}>
@@ -479,7 +529,17 @@ export default function Home() {
             </View>
           )
         }
-        showsVerticalScrollIndicator={false}
+        // ✅ Pagination
+        onEndReachedThreshold={0.5}
+        onEndReached={() => {
+          if (onEndReachedCalledDuringMomentum.current) return;
+          onEndReachedCalledDuringMomentum.current = true;
+          fetchPets({ reset: false });
+        }}
+        onMomentumScrollBegin={() => {
+          onEndReachedCalledDuringMomentum.current = false;
+        }}
+        ListFooterComponent={<FooterLoading />}
       />
 
       {/* Filter Modal */}
@@ -507,7 +567,7 @@ export default function Home() {
                       setFilters((prev) => ({
                         ...prev,
                         category: cat,
-                        breed: "ทั้งหมด", // ✅ เปลี่ยนประเภทแล้ว reset breed
+                        breed: "ทั้งหมด",
                       }))
                     }
                   >

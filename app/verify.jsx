@@ -22,6 +22,9 @@ import { createClerkSupabaseClient } from "../config/supabaseClient";
 
 const SUPABASE_URL = Constants.expoConfig.extra.supabaseUrl;
 
+// ✅ NEW: ข้อความคาดเฉียงบนรูป
+const WATERMARK_TEXT = "ใช้เพื่อรับเลี้ยงสัตว์เท่านั้น";
+
 export default function VerifyScreen() {
   const { user } = useUser();
   const { getToken } = useAuth();
@@ -158,7 +161,7 @@ export default function VerifyScreen() {
 
     if (!uploadResponse.ok) {
       throw new Error(
-        uploadResult.error || uploadResult.message || "Upload failed"
+        uploadResult.error || uploadResult.message || "Upload failed",
       );
     }
 
@@ -292,7 +295,7 @@ export default function VerifyScreen() {
           p_emergency_phone: emergencyPhone,
           p_occupation: occupation,
           p_monthly_income: monthlyIncome,
-        }
+        },
       );
 
       if (error) throw error;
@@ -302,7 +305,7 @@ export default function VerifyScreen() {
       Alert.alert(
         "ส่งคำขอสำเร็จ ✅",
         "ทีมงานจะตรวจสอบข้อมูลภายใน 2-3 วันทำการ คุณจะได้รับการแจ้งเตือนเมื่อผ่านการตรวจสอบ",
-        [{ text: "ตกลง", onPress: () => router.back() }]
+        [{ text: "ตกลง", onPress: () => router.back() }],
       );
 
       setVerificationStatus("pending");
@@ -421,7 +424,7 @@ export default function VerifyScreen() {
 
         <ScrollView showsVerticalScrollIndicator={false}>
           <View style={styles.content}>
-            {/* Step 1: ข้อมูลส่วนตัว */}
+            {/* Step 1 */}
             {currentStep === 1 && (
               <>
                 <Text style={styles.stepTitle}>
@@ -511,7 +514,7 @@ export default function VerifyScreen() {
               </>
             )}
 
-            {/* Step 2: เอกสารยืนยันตัวตน */}
+            {/* Step 2 */}
             {currentStep === 2 && (
               <>
                 <Text style={styles.stepTitle}>
@@ -536,10 +539,21 @@ export default function VerifyScreen() {
                   </Text>
                   {idCardImage ? (
                     <View style={styles.imagePreview}>
-                      <Image
-                        source={{ uri: idCardImage }}
-                        style={styles.uploadedImage}
-                      />
+                      <View style={styles.imageFrame}>
+                        <Image
+                          source={{ uri: idCardImage }}
+                          style={styles.uploadedImageFill}
+                        />
+
+                        {/* ✅ NEW: คาดเฉียง */}
+                        <View style={styles.watermarkDiagonalWrap}>
+                          <View style={styles.watermarkDiagonalStroke} />
+                          <Text style={styles.watermarkDiagonalText}>
+                            {WATERMARK_TEXT}
+                          </Text>
+                        </View>
+                      </View>
+
                       <TouchableOpacity
                         style={styles.changeImageButton}
                         onPress={() => pickImage("idCard")}
@@ -569,10 +583,19 @@ export default function VerifyScreen() {
                   </Text>
                   {selfieWithIdImage ? (
                     <View style={styles.imagePreview}>
-                      <Image
-                        source={{ uri: selfieWithIdImage }}
-                        style={styles.uploadedImage}
-                      />
+                      <View style={styles.imageFrame}>
+                        <Image
+                          source={{ uri: selfieWithIdImage }}
+                          style={styles.uploadedImageFill}
+                        />
+                        <View style={styles.watermarkDiagonalWrap}>
+                          <View style={styles.watermarkDiagonalStroke} />
+                          <Text style={styles.watermarkDiagonalText}>
+                            {WATERMARK_TEXT}
+                          </Text>
+                        </View>
+                      </View>
+
                       <TouchableOpacity
                         style={styles.changeImageButton}
                         onPress={() => pickImage("selfie")}
@@ -605,10 +628,19 @@ export default function VerifyScreen() {
                   </Text>
                   {proofOfAddressImage ? (
                     <View style={styles.imagePreview}>
-                      <Image
-                        source={{ uri: proofOfAddressImage }}
-                        style={styles.uploadedImage}
-                      />
+                      <View style={styles.imageFrame}>
+                        <Image
+                          source={{ uri: proofOfAddressImage }}
+                          style={styles.uploadedImageFill}
+                        />
+                        <View style={styles.watermarkDiagonalWrap}>
+                          <View style={styles.watermarkDiagonalStroke} />
+                          <Text style={styles.watermarkDiagonalText}>
+                            {WATERMARK_TEXT}
+                          </Text>
+                        </View>
+                      </View>
+
                       <TouchableOpacity
                         style={styles.changeImageButton}
                         onPress={() => pickImage("address")}
@@ -631,7 +663,7 @@ export default function VerifyScreen() {
               </>
             )}
 
-            {/* Step 3: ข้อมูลเพิ่มเติม */}
+            {/* Step 3 */}
             {currentStep === 3 && (
               <>
                 <Text style={styles.stepTitle}>
@@ -718,7 +750,7 @@ export default function VerifyScreen() {
               </>
             )}
 
-            {/* Step 4: ยอมรับเงื่อนไข */}
+            {/* Step 4 */}
             {currentStep === 4 && (
               <>
                 <Text style={styles.stepTitle}>
@@ -860,7 +892,6 @@ const styles = StyleSheet.create({
     paddingTop: 50,
   },
 
-  // Progress Bar
   progressContainer: {
     flexDirection: "row",
     paddingHorizontal: 20,
@@ -880,29 +911,18 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
-  progressStepActive: {
-    backgroundColor: "#8B5CF6",
-  },
-  progressStepText: {
-    fontSize: 14,
-    fontWeight: "700",
-    color: "#9CA3AF",
-  },
-  progressStepTextActive: {
-    color: "#FFFFFF",
-  },
+  progressStepActive: { backgroundColor: "#8B5CF6" },
+  progressStepText: { fontSize: 14, fontWeight: "700", color: "#9CA3AF" },
+  progressStepTextActive: { color: "#FFFFFF" },
   progressLine: {
     flex: 1,
     height: 2,
     backgroundColor: "#E5E7EB",
     marginHorizontal: 8,
   },
-  progressLineActive: {
-    backgroundColor: "#8B5CF6",
-  },
+  progressLineActive: { backgroundColor: "#8B5CF6" },
 
   content: { padding: 20 },
-
   stepTitle: {
     fontSize: 20,
     fontWeight: "800",
@@ -923,12 +943,7 @@ const styles = StyleSheet.create({
   infoText: { flex: 1, fontSize: 14, color: "#1E40AF", lineHeight: 20 },
 
   inputGroup: { marginBottom: 20 },
-  label: {
-    fontSize: 15,
-    fontWeight: "600",
-    color: "#111827",
-    marginBottom: 8,
-  },
+  label: { fontSize: 15, fontWeight: "600", color: "#111827", marginBottom: 8 },
   required: { color: "#EF4444" },
   hint: { fontSize: 13, color: "#6B7280", marginBottom: 8 },
 
@@ -942,19 +957,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: "#111827",
   },
-  textArea: {
-    height: 100,
-    textAlignVertical: "top",
-  },
+  textArea: { height: 100, textAlignVertical: "top" },
 
-  row: {
-    flexDirection: "row",
-  },
+  row: { flexDirection: "row" },
 
-  // Upload Section
-  uploadSection: {
-    marginBottom: 24,
-  },
+  uploadSection: { marginBottom: 24 },
   uploadButton: {
     backgroundColor: "#F9FAFB",
     borderWidth: 2,
@@ -965,37 +972,59 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 12,
   },
-  uploadText: {
-    fontSize: 15,
-    color: "#8B5CF6",
-    fontWeight: "600",
-  },
-  imagePreview: {
-    alignItems: "center",
-    gap: 12,
-  },
-  uploadedImage: {
+  uploadText: { fontSize: 15, color: "#8B5CF6", fontWeight: "600" },
+  imagePreview: { alignItems: "center", gap: 12 },
+
+  imageFrame: {
     width: "100%",
     height: 200,
     borderRadius: 12,
+    overflow: "hidden",
     backgroundColor: "#F3F4F6",
+    position: "relative",
   },
+  uploadedImageFill: {
+    ...StyleSheet.absoluteFillObject,
+    width: "100%",
+    height: "100%",
+  },
+
+  // ✅ NEW: Watermark แบบคาดเฉียง
+  watermarkDiagonalWrap: {
+    position: "absolute",
+    left: -60,
+    right: -60,
+    top: "45%",
+    alignItems: "center",
+    transform: [{ rotate: "-18deg" }],
+    pointerEvents: "none",
+  },
+  watermarkDiagonalStroke: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    top: -10,
+    height: 46,
+    backgroundColor: "rgba(17, 24, 39, 0.35)",
+  },
+  watermarkDiagonalText: {
+    width: "100%",
+    textAlign: "center",
+    fontSize: 22,
+    fontWeight: "900",
+    color: "rgba(255,255,255,0.9)",
+    letterSpacing: 1,
+  },
+
   changeImageButton: {
     paddingHorizontal: 20,
     paddingVertical: 10,
     backgroundColor: "#F3F4F6",
     borderRadius: 8,
   },
-  changeImageText: {
-    fontSize: 14,
-    color: "#8B5CF6",
-    fontWeight: "600",
-  },
+  changeImageText: { fontSize: 14, color: "#8B5CF6", fontWeight: "600" },
 
-  // Radio Group
-  radioGroup: {
-    gap: 10,
-  },
+  radioGroup: { gap: 10 },
   radioButton: {
     paddingVertical: 14,
     paddingHorizontal: 16,
@@ -1004,21 +1033,10 @@ const styles = StyleSheet.create({
     borderColor: "#E5E7EB",
     backgroundColor: "#F9FAFB",
   },
-  radioButtonActive: {
-    borderColor: "#8B5CF6",
-    backgroundColor: "#F5F3FF",
-  },
-  radioButtonText: {
-    fontSize: 15,
-    color: "#6B7280",
-    fontWeight: "500",
-  },
-  radioButtonTextActive: {
-    color: "#8B5CF6",
-    fontWeight: "600",
-  },
+  radioButtonActive: { borderColor: "#8B5CF6", backgroundColor: "#F5F3FF" },
+  radioButtonText: { fontSize: 15, color: "#6B7280", fontWeight: "500" },
+  radioButtonTextActive: { color: "#8B5CF6", fontWeight: "600" },
 
-  // Summary Box
   summaryBox: {
     backgroundColor: "#F9FAFB",
     padding: 16,
@@ -1037,11 +1055,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#E5E7EB",
   },
-  summaryLabel: {
-    fontSize: 14,
-    color: "#6B7280",
-    flex: 1,
-  },
+  summaryLabel: { fontSize: 14, color: "#6B7280", flex: 1 },
   summaryValue: {
     fontSize: 14,
     color: "#111827",
@@ -1050,11 +1064,7 @@ const styles = StyleSheet.create({
     textAlign: "right",
   },
 
-  // Terms & Checkbox
-  termsBox: {
-    gap: 16,
-    marginBottom: 20,
-  },
+  termsBox: { gap: 16, marginBottom: 20 },
   checkboxContainer: {
     flexDirection: "row",
     alignItems: "flex-start",
@@ -1070,16 +1080,8 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginTop: 2,
   },
-  checkboxActive: {
-    backgroundColor: "#8B5CF6",
-    borderColor: "#8B5CF6",
-  },
-  checkboxText: {
-    flex: 1,
-    fontSize: 14,
-    color: "#374151",
-    lineHeight: 20,
-  },
+  checkboxActive: { backgroundColor: "#8B5CF6", borderColor: "#8B5CF6" },
+  checkboxText: { flex: 1, fontSize: 14, color: "#374151", lineHeight: 20 },
 
   warningBox: {
     flexDirection: "row",
@@ -1090,14 +1092,8 @@ const styles = StyleSheet.create({
     borderLeftWidth: 4,
     borderLeftColor: "#F59E0B",
   },
-  warningText: {
-    flex: 1,
-    fontSize: 13,
-    color: "#92400E",
-    lineHeight: 18,
-  },
+  warningText: { flex: 1, fontSize: 13, color: "#92400E", lineHeight: 18 },
 
-  // Navigation
   navigationContainer: {
     flexDirection: "row",
     padding: 20,
@@ -1115,29 +1111,16 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     gap: 8,
   },
-  navButtonPrimary: {
-    backgroundColor: "#8B5CF6",
-  },
+  navButtonPrimary: { backgroundColor: "#8B5CF6" },
   navButtonSecondary: {
     backgroundColor: "#FFFFFF",
     borderWidth: 2,
     borderColor: "#8B5CF6",
   },
-  navButtonDisabled: {
-    opacity: 0.5,
-  },
-  navButtonPrimaryText: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "600",
-  },
-  navButtonSecondaryText: {
-    color: "#8B5CF6",
-    fontSize: 16,
-    fontWeight: "600",
-  },
+  navButtonDisabled: { opacity: 0.5 },
+  navButtonPrimaryText: { color: "#FFFFFF", fontSize: 16, fontWeight: "600" },
+  navButtonSecondaryText: { color: "#8B5CF6", fontSize: 16, fontWeight: "600" },
 
-  // Status Screen
   statusContainer: {
     flex: 1,
     justifyContent: "center",
@@ -1177,9 +1160,5 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderRadius: 12,
   },
-  backButtonText: {
-    color: "#FFFFFF",
-    fontSize: 16,
-    fontWeight: "600",
-  },
+  backButtonText: { color: "#FFFFFF", fontSize: 16, fontWeight: "600" },
 });

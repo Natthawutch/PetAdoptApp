@@ -2,7 +2,7 @@ import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import * as Location from "expo-location";
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
@@ -11,7 +11,10 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { createClerkSupabaseClient } from "../../config/supabaseClient";
+import {
+  createClerkSupabaseClient,
+  getRealtimeClient,
+} from "../../config/supabaseClient";
 import { useInboxStore } from "../../store/inboxStore";
 
 export default function Header() {
@@ -20,19 +23,21 @@ export default function Header() {
   const router = useRouter();
 
   const inboxCount = useInboxStore((s) => s.inboxCount);
+  const setInboxCount = useInboxStore((s) => s.setInboxCount);
 
   const [loading, setLoading] = useState(true);
   const [locationText, setLocationText] = useState("กำลังตรวจสอบตำแหน่ง...");
 
-  // ✅ ชื่อจาก Supabase
   const [dbFullName, setDbFullName] = useState(null);
+
+  const channelRef = useRef(null);
 
   const avatar = useMemo(
     () => clerkUser?.imageUrl || "https://www.gravatar.com/avatar/?d=mp",
     [clerkUser?.imageUrl],
   );
 
-  // ✅ ดึงชื่อจากตาราง users ด้วย clerk_id (มี retry กัน row ยังไม่ทันถูกสร้าง)
+  // ✅ โหลดชื่อจาก DB
   const loadProfileName = useCallback(async () => {
     try {
       if (!clerkUser?.id) return;
@@ -40,7 +45,6 @@ export default function Header() {
       const token = await getToken({ template: "supabase" });
       const supabase = createClerkSupabaseClient(token);
 
-      // retry 3 รอบ เผื่อ AuthWrapper upsert ยังไม่เสร็จ
       for (let i = 0; i < 3; i++) {
         const { data, error } = await supabase
           .from("users")
@@ -65,21 +69,98 @@ export default function Header() {
     }
   }, [clerkUser?.id, getToken]);
 
+  // ✅ ✅ สำคัญ: โหลด unread แบบชัวร์ ด้วย RPC (ครั้งเดียว)
+  const loadInboxCount = useCallback(async () => {
+    try {
+      if (!clerkUser?.id) return;
+
+      const token = await getToken({ template: "supabase", skipCache: true });
+      const sb = createClerkSupabaseClient(token);
+
+      const { data, error } = await sb.rpc("get_unread_count", {
+        p_user_id: clerkUser.id,
+      });
+
+      if (error) throw error;
+
+      setInboxCount(Number(data || 0));
+    } catch (e) {
+      console.error("Header loadInboxCount (rpc) error:", e);
+    }
+  }, [clerkUser?.id, getToken, setInboxCount]);
+
+  // ✅ realtime: เวลา message เข้า/อ่านแล้ว ให้ refresh badge
+  const setupRealtimeBadge = useCallback(async () => {
+    try {
+      if (!clerkUser?.id) return;
+
+      const token = await getToken({ template: "supabase", skipCache: true });
+      const rt = getRealtimeClient(token);
+
+      if (channelRef.current) {
+        channelRef.current.unsubscribe();
+        channelRef.current = null;
+      }
+
+      const ch = rt
+        .channel(`header-badge-${clerkUser.id}`)
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "messages" },
+          () => loadInboxCount(),
+        )
+        .on(
+          "postgres_changes",
+          { event: "UPDATE", schema: "public", table: "messages" },
+          () => loadInboxCount(),
+        )
+        .on(
+          "postgres_changes",
+          { event: "UPDATE", schema: "public", table: "chats" },
+          () => loadInboxCount(),
+        )
+        .subscribe((status, err) => {
+          console.log("🔌 Header realtime status:", status);
+          if (err) console.error("❌ Header realtime error:", err);
+        });
+
+      channelRef.current = ch;
+    } catch (e) {
+      console.error("setupRealtimeBadge error:", e);
+    }
+  }, [clerkUser?.id, getToken, loadInboxCount]);
+
   // ✅ set loading เมื่อ Clerk โหลดเสร็จ
   useEffect(() => {
     if (!isLoaded) return;
     setLoading(false);
   }, [isLoaded]);
 
-  // ✅ สำคัญ: refetch ทุกครั้งที่เข้า/กลับมาหน้านี้ + เมื่อ user.id พร้อม
+  // ✅ โหลด “ทันที” ตอน user.id พร้อม (นี่แหละที่ทำให้ไม่ต้องเข้า Inbox ก่อน)
+  useEffect(() => {
+    if (!isLoaded || !clerkUser?.id) return;
+
+    loadInboxCount();
+    setupRealtimeBadge();
+
+    return () => {
+      if (channelRef.current) {
+        channelRef.current.unsubscribe();
+        channelRef.current = null;
+      }
+    };
+  }, [isLoaded, clerkUser?.id, loadInboxCount, setupRealtimeBadge]);
+
+  // ✅ refresh ตอนกลับมาหน้านี้
   useFocusEffect(
     useCallback(() => {
       if (!isLoaded || !clerkUser?.id) return;
       loadProfileName();
-    }, [isLoaded, clerkUser?.id, loadProfileName]),
+      loadInboxCount();
+    }, [isLoaded, clerkUser?.id, loadProfileName, loadInboxCount]),
   );
 
-  // (เหมือนเดิม) location
+  // location (เหมือนเดิม)
   useEffect(() => {
     (async () => {
       try {
@@ -113,7 +194,6 @@ export default function Header() {
     );
   }
 
-  // ✅ ให้ DB เป็นตัวจริง, ถ้า DB ยังไม่มา ให้ใช้ unsafeMetadata.name ก่อน
   const fullName =
     dbFullName ||
     clerkUser?.unsafeMetadata?.name ||
@@ -155,6 +235,7 @@ export default function Header() {
         <TouchableOpacity
           style={styles.iconButton}
           onPress={() => router.push("/Favorite/favorite")}
+          activeOpacity={0.7}
         >
           <View style={styles.iconWrapper}>
             <Ionicons name="heart" size={22} color="#fff" />
@@ -164,6 +245,7 @@ export default function Header() {
         <TouchableOpacity
           style={styles.iconButton}
           onPress={() => router.push("/Inbox/inbox")}
+          activeOpacity={0.7}
         >
           <View style={styles.iconWrapper}>
             <MaterialCommunityIcons

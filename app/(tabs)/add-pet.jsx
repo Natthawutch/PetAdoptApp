@@ -159,9 +159,13 @@ export default function AddNewPetForm() {
   const [petName, setPetName] = useState("");
   const [category, setCategory] = useState("สุนัข");
   const [breed, setBreed] = useState("ไม่ทราบ");
-  const [age, setAge] = useState("");
+  const [age, setAge] = useState(""); // ไม่ใส่ได้ (จะเก็บเป็น null)
   const [weight, setWeight] = useState("");
   const [sex, setSex] = useState("ผู้");
+
+  // รูปแบบการเลี้ยง: ระบบปิด / ระบบเปิด
+  // (ตั้งค่าเริ่มต้นเป็น "ระบบปิด" เพื่อไม่บังคับเลือก แต่มีตัวเลือกให้)
+  const [careType, setCareType] = useState("ระบบปิด");
 
   // จังหวัด
   const [province, setProvince] = useState("ไม่ระบุ");
@@ -173,7 +177,8 @@ export default function AddNewPetForm() {
   const [vaccines, setVaccines] = useState([]);
   const [selectedVaccine, setSelectedVaccine] = useState(""); // ค่าใน dropdown
 
-  const [isNeutered, setIsNeutered] = useState("ยังไม่ได้ทำ");
+  // ทำหมัน: บังคับเลือก + มี 3 ตัวเลือก
+  const [isNeutered, setIsNeutered] = useState(""); // "ทำแล้ว" | "ไม่ทำ" | "ไม่ทราบ"
   const [postStatus, setPostStatus] = useState("Available");
 
   // ----- Media States -----
@@ -282,6 +287,9 @@ export default function AddNewPetForm() {
     setAge("");
     setWeight("");
     setSex("ผู้");
+
+    setCareType("ระบบปิด");
+
     setProvince("ไม่ระบุ");
     setAbout("");
     setPersonality("");
@@ -289,7 +297,7 @@ export default function AddNewPetForm() {
     setVaccines([]);
     setSelectedVaccine("");
 
-    setIsNeutered("ยังไม่ได้ทำ");
+    setIsNeutered(""); // reset ให้บังคับเลือกใหม่
     setPostStatus("Available");
 
     setImages([]);
@@ -299,10 +307,11 @@ export default function AddNewPetForm() {
   /* -------------------- Submit Logic -------------------- */
 
   const submitPet = async () => {
-    if (!petName || !category || !sex || images.length === 0) {
+    // บังคับ: ชื่อ, ประเภท, เพศ, ทำหมัน, รูปอย่างน้อย 1
+    if (!petName || !category || !sex || !isNeutered || images.length === 0) {
       return Alert.alert(
         "ข้อมูลไม่ครบ",
-        "กรุณาระบุชื่อ ประเภท เพศ และเพิ่มรูปอย่างน้อย 1 รูป",
+        "กรุณาระบุชื่อ ประเภท เพศ สถานะทำหมัน และเพิ่มรูปอย่างน้อย 1 รูป",
       );
     }
 
@@ -332,13 +341,19 @@ export default function AddNewPetForm() {
           weight: weight.trim() === "" ? null : parseFloat(weight),
 
           sex,
+
+          // จังหวัด
           address: province,
+
+          // รูปแบบการเลี้ยง: ต้องมีคอลัมน์ care_type ในตาราง pets
+          care_type: careType,
 
           about,
           personality,
 
           vaccine_history: vaccineHistoryValue,
 
+          // ทำหมัน: "ทำแล้ว" | "ไม่ทำ" | "ไม่ทราบ"
           is_neutered: isNeutered,
           post_status: postStatus,
 
@@ -386,7 +401,10 @@ export default function AddNewPetForm() {
 
           {/* Media Section */}
           <View style={styles.card}>
-            <Text style={styles.label}>รูปภาพน้องๆ (สูงสุด 5 รูป) *</Text>
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>รูปภาพน้องๆ (สูงสุด 5 รูป) </Text>
+              <Text style={styles.requiredStar}>*</Text>
+            </View>
 
             <ScrollView
               horizontal
@@ -438,7 +456,11 @@ export default function AddNewPetForm() {
           <View style={styles.card}>
             <Text style={styles.sectionTitle}>ข้อมูลทั่วไป</Text>
 
-            <Text style={styles.label}>ประเภท *</Text>
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>ประเภท </Text>
+              <Text style={styles.requiredStar}>*</Text>
+            </View>
+
             <View style={styles.choiceRow}>
               {["สุนัข", "แมว"].map((cat) => (
                 <TouchableOpacity
@@ -468,6 +490,10 @@ export default function AddNewPetForm() {
               ))}
             </View>
 
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>ชื่อน้อง </Text>
+              <Text style={styles.requiredStar}>*</Text>
+            </View>
             <TextInput
               style={styles.input}
               placeholder="ชื่อน้อง"
@@ -485,6 +511,27 @@ export default function AddNewPetForm() {
                   <Picker.Item key={b} label={b} value={b} />
                 ))}
               </Picker>
+            </View>
+
+            {/* รูปแบบการเลี้ยง: ระบบปิด/ระบบเปิด */}
+            <Text style={styles.label}>รูปแบบการเลี้ยง</Text>
+            <View style={styles.choiceRow}>
+              {["ระบบปิด", "ระบบเปิด"].map((t) => (
+                <TouchableOpacity
+                  key={t}
+                  style={[styles.choiceBtn, careType === t && styles.sexActive]}
+                  onPress={() => setCareType(t)}
+                >
+                  <Text
+                    style={[
+                      styles.choiceText,
+                      careType === t && styles.choiceTextActive,
+                    ]}
+                  >
+                    {t === "ระบบปิด" ? "🏠 ระบบปิด" : "🌳 ระบบเปิด"}
+                  </Text>
+                </TouchableOpacity>
+              ))}
             </View>
 
             <View style={styles.row}>
@@ -510,7 +557,11 @@ export default function AddNewPetForm() {
               </View>
             </View>
 
-            <Text style={styles.label}>เพศ *</Text>
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>เพศ </Text>
+              <Text style={styles.requiredStar}>*</Text>
+            </View>
+
             <View style={styles.choiceRow}>
               {["ผู้", "เมีย"].map((s) => (
                 <TouchableOpacity
@@ -581,9 +632,14 @@ export default function AddNewPetForm() {
               </Text>
             )}
 
-            <Text style={styles.label}>การทำหมัน</Text>
+            {/* ทำหมัน: 3 ตัวเลือก + บังคับ */}
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>การทำหมัน </Text>
+              <Text style={styles.requiredStar}>*</Text>
+            </View>
+
             <View style={styles.choiceRow}>
-              {["ทำแล้ว", "ยังไม่ได้ทำ"].map((item) => (
+              {["ทำแล้ว", "ไม่ทำ", "ไม่ทราบ"].map((item) => (
                 <TouchableOpacity
                   key={item}
                   style={[
@@ -656,6 +712,11 @@ const styles = StyleSheet.create({
   header: { marginTop: 30, marginBottom: 20 },
   title: { fontSize: 28, fontWeight: "800", color: "#1F2937" },
   subtitle: { fontSize: 14, color: "#6B7280", marginTop: 4 },
+
+  // Label + Required star
+  labelRow: { flexDirection: "row", alignItems: "center" },
+  requiredStar: { color: "#EF4444", fontWeight: "800" },
+
   card: {
     backgroundColor: "#FFF",
     borderRadius: 20,

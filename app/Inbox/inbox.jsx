@@ -1,3 +1,4 @@
+// ✅ Inbox.js - Full code (อัปเดต store: เวลา+จำนวนเข้า)  *แก้เฉพาะส่วนที่เกี่ยวข้อง แต่ให้เป็นไฟล์เต็มตามที่คุณส่งมา*
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
@@ -20,11 +21,14 @@ import {
   createClerkSupabaseClient,
   getRealtimeClient,
 } from "../../config/supabaseClient";
+import { useInboxStore } from "../../store/inboxStore";
 
 export default function Inbox() {
   const { user, isLoaded } = useUser();
   const { getToken } = useAuth();
   const router = useRouter();
+
+  const setInboxMeta = useInboxStore((s) => s.setInboxMeta);
 
   const [chats, setChats] = useState([]);
   const [filteredChats, setFilteredChats] = useState([]);
@@ -35,10 +39,23 @@ export default function Inbox() {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const channelRef = useRef(null);
 
+  // ✅ NEW: กันโหลดซ้ำทุกครั้งที่กลับมาหน้า Inbox
+  const didInitialLoadRef = useRef(false);
+
   const getClerkToken = async () => {
     const token = await getToken({ template: "supabase", skipCache: true });
     if (!token) throw new Error("Missing Clerk token");
     return token;
+  };
+
+  // ✅ helper: คำนวณ meta ใหม่จาก list
+  const syncMetaFromList = (list) => {
+    const totalUnread = (list || []).reduce(
+      (sum, c) => sum + (c.unread_count || 0),
+      0,
+    );
+    const latestAt = list?.[0]?.last_message_at || null;
+    setInboxMeta({ inboxCount: totalUnread, lastInboxAt: latestAt });
   };
 
   // โหลด chats
@@ -108,6 +125,9 @@ export default function Inbox() {
       setChats(result);
       setFilteredChats(result);
 
+      // ✅ update store meta (unread รวม + เวลา latest)
+      syncMetaFromList(result);
+
       Animated.timing(fadeAnim, {
         toValue: 1,
         duration: 250,
@@ -175,20 +195,23 @@ export default function Inbox() {
         unread_count: unreadCount || 0,
       };
 
-      // อัปเดต state แบบ smooth
+      // ✅ อัปเดต state แบบ smooth + update store meta
       setChats((prev) => {
         const exists = prev.find((c) => c.id === chatId);
 
+        let next;
         if (exists) {
-          // แชทมีอยู่แล้ว -> อัปเดต + เรียงใหม่
-          const updated = prev.map((c) => (c.id === chatId ? updatedChat : c));
-          return updated.sort(
-            (a, b) => new Date(b.last_message_at) - new Date(a.last_message_at),
-          );
+          next = prev.map((c) => (c.id === chatId ? updatedChat : c));
         } else {
-          // แชทใหม่ -> เพิ่มเข้าไป
-          return [updatedChat, ...prev];
+          next = [updatedChat, ...prev];
         }
+
+        next = next.sort(
+          (a, b) => new Date(b.last_message_at) - new Date(a.last_message_at),
+        );
+
+        syncMetaFromList(next);
+        return next;
       });
 
       console.log("✅ Chat updated smoothly:", chatId);
@@ -214,54 +237,38 @@ export default function Inbox() {
         .channel(`inbox-${user.id}`)
         .on(
           "postgres_changes",
-          {
-            event: "INSERT",
-            schema: "public",
-            table: "messages",
-          },
+          { event: "INSERT", schema: "public", table: "messages" },
           (payload) => {
             console.log("📩 New message inserted:", payload.new);
-            // อัปเดตเฉพาะแชทนั้น
             updateChatRealtime(payload.new.chat_id);
           },
         )
         .on(
           "postgres_changes",
-          {
-            event: "UPDATE",
-            schema: "public",
-            table: "messages",
-          },
+          { event: "UPDATE", schema: "public", table: "messages" },
           (payload) => {
             console.log("✏️ Message updated:", payload.new);
-            // อัปเดตเฉพาะแชทนั้น (เช่น mark as read)
             updateChatRealtime(payload.new.chat_id);
           },
         )
         .on(
           "postgres_changes",
-          {
-            event: "UPDATE",
-            schema: "public",
-            table: "chats",
-          },
+          { event: "UPDATE", schema: "public", table: "chats" },
           (payload) => {
             console.log("💬 Chat updated:", payload.new);
-            // อัปเดตเฉพาะแชทนั้น
             updateChatRealtime(payload.new.id);
           },
         )
         .on(
           "postgres_changes",
-          {
-            event: "DELETE",
-            schema: "public",
-            table: "chats",
-          },
+          { event: "DELETE", schema: "public", table: "chats" },
           (payload) => {
             console.log("🗑️ Chat deleted:", payload.old);
-            // ลบออกจาก state
-            setChats((prev) => prev.filter((c) => c.id !== payload.old.id));
+            setChats((prev) => {
+              const next = prev.filter((c) => c.id !== payload.old.id);
+              syncMetaFromList(next);
+              return next;
+            });
           },
         )
         .subscribe((status, err) => {
@@ -276,14 +283,27 @@ export default function Inbox() {
   };
 
   // ✅ ใช้ useFocusEffect เพื่อ reconnect ทุกครั้งที่กลับมาหน้านี้
+  // ❗️แต่ "โหลด chats" แค่ครั้งแรก (กันรีโหลดตอนออกจากหน้า chat แล้วกลับมา)
   useFocusEffect(
     useCallback(() => {
       if (!user?.id) return;
 
-      console.log(
-        "📱 Inbox screen focused - loading chats & setting up realtime",
-      );
-      loadChats();
+      console.log("📱 Inbox screen focused - setting up realtime");
+
+      // ✅ โหลดครั้งแรกเท่านั้น (หรือกรณี state ว่างจริง ๆ)
+      if (!didInitialLoadRef.current || chats.length === 0) {
+        console.log("📥 Initial loadChats()");
+        didInitialLoadRef.current = true;
+        loadChats();
+      } else {
+        // ไม่ต้องโหลดใหม่ แค่ fade ให้แสดง (กันกรณี opacity ยัง 0)
+        Animated.timing(fadeAnim, {
+          toValue: 1,
+          duration: 150,
+          useNativeDriver: true,
+        }).start();
+      }
+
       setupRealtime();
 
       return () => {
@@ -293,6 +313,8 @@ export default function Inbox() {
           channelRef.current = null;
         }
       };
+      // ✅ ตั้งใจ "ไม่ใส่ chats" ใน deps เพื่อไม่ให้ focus effect วิ่งใหม่เพราะ state เปลี่ยน
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [user?.id]),
   );
 
@@ -347,8 +369,11 @@ export default function Inbox() {
             await sb.from("messages").delete().eq("chat_id", chatId);
             await sb.from("chats").delete().eq("id", chatId);
 
-            // ลบออกจาก state ทันที (Realtime จะจัดการให้อยู่แล้ว)
-            setChats((prev) => prev.filter((c) => c.id !== chatId));
+            setChats((prev) => {
+              const next = prev.filter((c) => c.id !== chatId);
+              syncMetaFromList(next);
+              return next;
+            });
           } catch (error) {
             console.error("Error deleting chat:", error);
             Alert.alert("Error", "Failed to delete conversation.");
@@ -434,7 +459,22 @@ export default function Inbox() {
       <StatusBar barStyle="dark-content" backgroundColor="#FFFFFF" />
 
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Messages</Text>
+        {/* ✅ NEW: แถวบน (ปุ่มย้อนกลับ + Title) */}
+        <View style={styles.headerTopRow}>
+          <TouchableOpacity
+            onPress={() => router.back()}
+            style={styles.backButton}
+            activeOpacity={0.7}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="chevron-back" size={26} color="#111827" />
+          </TouchableOpacity>
+
+          <Text style={styles.headerTitle}>Messages</Text>
+
+          {/* spacer ให้ title อยู่กลางสวย ๆ */}
+          <View style={styles.headerRightSpacer} />
+        </View>
 
         <View style={styles.searchContainer}>
           <Ionicons
@@ -505,13 +545,35 @@ const styles = StyleSheet.create({
     borderBottomColor: "#F3F4F6",
     paddingTop: 48,
   },
+
+  // ✅ NEW: Header layout
+  headerTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 16,
+  },
+  backButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#F9FAFB",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+  },
+  headerRightSpacer: { width: 40, height: 40 },
+
   headerTitle: {
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: "700",
     color: "#111827",
     letterSpacing: -0.5,
-    marginBottom: 16,
+    marginBottom: 0,
+    textAlign: "center",
   },
+
   searchContainer: {
     flexDirection: "row",
     alignItems: "center",

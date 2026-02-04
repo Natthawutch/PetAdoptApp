@@ -57,7 +57,7 @@ function AdminTabsLayout() {
           bottom: 0,
         },
         tabBarLabelStyle: {
-          fontSize: 11,
+          fontSize: 10,
           fontWeight: "700",
           marginTop: 4,
         },
@@ -97,7 +97,7 @@ function AdminTabsLayout() {
       <Tabs.Screen
         name="notifications"
         options={{
-          title: "การแจ้งเตือน",
+          title: "แจ้งเตือน",
           tabBarIcon: ({ color, focused }) => (
             <TabIcon
               name={focused ? "notifications" : "notifications-outline"}
@@ -112,7 +112,7 @@ function AdminTabsLayout() {
       <Tabs.Screen
         name="verifications"
         options={{
-          title: "จัดการคำขอยืนยันตัวตน",
+          title: "ยืนยันตัวตน",
           tabBarIcon: ({ color, focused }) => (
             <TabIcon
               name={focused ? "shield-checkmark" : "shield-checkmark-outline"}
@@ -126,7 +126,7 @@ function AdminTabsLayout() {
       <Tabs.Screen
         name="volunteers"
         options={{
-          title: "จัดการคำขออาสาสมัคร",
+          title: "อาสาสมัคร",
           tabBarIcon: ({ color, focused }) => (
             <TabIcon
               name={focused ? "people" : "people-outline"}

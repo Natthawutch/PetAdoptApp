@@ -22,7 +22,7 @@ export default function TabLayout() {
           overflow: "hidden",
         },
         tabBarLabelStyle: {
-          fontSize: 13,
+          fontSize: 12,
           fontWeight: "600",
         },
         headerShown: false,
@@ -51,7 +51,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="add-pet"
         options={{
-          title: "เพิ่มสัตว์เลี้ยง",
+          title: "เพิ่มสัตว์",
           tabBarIcon: ({ color }) => (
             <Ionicons name="add-circle" size={25} color={color} />
           ),
@@ -61,7 +61,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="notifications" // เปลี่ยนตรงนี้
         options={{
-          title: "การแจ้งเตือน", // เปลี่ยน title
+          title: "แจ้งเตือน", // เปลี่ยน title
           tabBarIcon: ({ color }) => (
             <Ionicons name="notifications" size={25} color={color} /> // เปลี่ยนไอคอนเป็น notifications
           ),
@@ -70,7 +70,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="track-adoption"
         options={{
-          title: "ติดตามสถานะ",
+          title: "สถานะ",
           tabBarIcon: ({ color }) => (
             <Ionicons name="document-text" size={25} color={color} />
           ),

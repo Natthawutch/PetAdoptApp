@@ -1,3 +1,6 @@
+/* ============================
+   components/PetDetails/PetInfo.jsx
+============================ */
 import Ionicons from "@expo/vector-icons/Ionicons";
 import { Video } from "expo-av";
 import { useRouter } from "expo-router";
@@ -18,9 +21,6 @@ export default function PetInfo({ pet, isFavorite, onToggleFavorite }) {
   const [containerWidth, setContainerWidth] = useState(0);
   const videoRef = useRef(null);
 
-  /* =======================
-     Media list
-  ======================= */
   const mediaList = [];
 
   if (pet?.video_url) mediaList.push({ type: "video", uri: pet.video_url });
@@ -38,9 +38,6 @@ export default function PetInfo({ pet, isFavorite, onToggleFavorite }) {
 
   images.forEach((img) => mediaList.push({ type: "image", uri: img }));
 
-  /* =======================
-     Video auto play / pause
-  ======================= */
   useEffect(() => {
     if (!videoRef.current) return;
     if (mediaList[0]?.type !== "video") return;
@@ -52,7 +49,6 @@ export default function PetInfo({ pet, isFavorite, onToggleFavorite }) {
 
   return (
     <View style={styles.container}>
-      {/* ================= HEADER ================= */}
       <View style={styles.header}>
         <TouchableOpacity style={styles.iconBtn} onPress={router.back}>
           <Ionicons name="arrow-back" size={22} color="#fff" />
@@ -71,7 +67,6 @@ export default function PetInfo({ pet, isFavorite, onToggleFavorite }) {
         </TouchableOpacity>
       </View>
 
-      {/* ================= MEDIA (with purple spacing) ================= */}
       <View style={styles.mediaSection}>
         <View
           style={styles.imageContainer}
@@ -130,7 +125,6 @@ export default function PetInfo({ pet, isFavorite, onToggleFavorite }) {
         </View>
       </View>
 
-      {/* ================= ADDRESS ================= */}
       <View style={styles.infoContainer}>
         <Text style={styles.address}>
           📍 {pet?.address || "ไม่ระบุสถานที่"}
@@ -140,7 +134,6 @@ export default function PetInfo({ pet, isFavorite, onToggleFavorite }) {
   );
 }
 
-/* ======================= STYLES ======================= */
 const styles = StyleSheet.create({
   container: {
     backgroundColor: "#fff",
@@ -150,7 +143,6 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
 
-  /* ===== Header ===== */
   header: {
     paddingTop: 15,
     paddingBottom: 14,
@@ -177,14 +169,12 @@ const styles = StyleSheet.create({
     fontFamily: "outfit-bold",
   },
 
-  /* ===== Media spacing (purple) ===== */
   mediaSection: {
-    backgroundColor: Colors.PURPLE, // ต่อเนื่องจาก header
+    backgroundColor: Colors.PURPLE,
   },
 
   imageContainer: {
     height: 280,
-
     backgroundColor: "#000",
     overflow: "hidden",
   },
@@ -212,7 +202,6 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
 
-  /* ===== Info ===== */
   infoContainer: {
     padding: 16,
   },
@@ -220,5 +209,13 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: Colors.GRAY,
     fontFamily: "outfit",
+  },
+
+  // ✅ new
+  careType: {
+    marginTop: 6,
+    fontSize: 14,
+    color: "#374151",
+    fontFamily: "outfit-medium",
   },
 });

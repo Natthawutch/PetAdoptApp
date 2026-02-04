@@ -22,7 +22,6 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
 
 /* =========================
    CLERK TOKEN STORE (GLOBAL)
-   - ใช้กรณีมี fetch/service บางจุดอยากดึง token ล่าสุด
 ========================= */
 let clerkTokenStore = null;
 
@@ -38,11 +37,12 @@ export const clearClerkToken = () => {
 
 /* =========================
    CLERK AUTH CLIENT (PER REQUEST)
+   - ใช้สำหรับ query/insert/update ผ่าน REST
 ========================= */
 export const createClerkSupabaseClient = (clerkToken) => {
   if (!clerkToken) throw new Error("Missing Clerk token");
 
-  // optional: เก็บ token ล่าสุดไว้เผื่อจุดอื่นใช้
+  // เก็บ token ล่าสุดไว้เผื่อจุดอื่นใช้
   setClerkToken(clerkToken);
 
   return createClient(supabaseUrl, supabaseAnonKey, {
@@ -64,7 +64,9 @@ export const createClerkSupabaseClient = (clerkToken) => {
 };
 
 /* =========================
-   REALTIME CLIENT (SINGLETON)
+   REALTIME CLIENT (SINGLETON) - FIXED
+   ✅ setAuth ทันทีตั้งแต่สร้าง client
+   ✅ token เปลี่ยน -> setAuth อย่างเดียว (ไม่ disconnect/connect เอง)
 ========================= */
 let realtimeClient = null;
 let realtimeToken = null;
@@ -82,48 +84,35 @@ export const getRealtimeClient = (clerkToken) => {
       realtime: {
         params: { eventsPerSecond: 10 },
       },
-      global: {
-        headers: {
-          Authorization: `Bearer ${clerkToken}`,
-          apikey: supabaseAnonKey,
-        },
-      },
     });
 
+    // ✅ สำคัญมาก: ตั้ง auth ให้ realtime socket ตั้งแต่ครั้งแรก
+    realtimeClient.realtime.setAuth(clerkToken);
     realtimeToken = clerkToken;
-    console.log("✅ Realtime client created");
+
+    console.log("✅ Realtime client created + authed");
     return realtimeClient;
   }
 
-  // token เปลี่ยน → reconnect realtime
+  // ✅ token เปลี่ยน -> setAuth อย่างเดียวพอ (Supabase จะจัดการ reconnect ให้)
   if (clerkToken !== realtimeToken) {
     realtimeToken = clerkToken;
-
-    try {
-      console.log("🔄 Realtime token changed, reconnecting...");
-      realtimeClient.realtime.setAuth(clerkToken);
-      realtimeClient.realtime.disconnect();
-
-      setTimeout(() => {
-        realtimeClient?.realtime.connect();
-        console.log("✅ Realtime reconnected");
-      }, 100);
-    } catch (error) {
-      console.error("❌ Realtime reconnect error:", error);
-    }
+    console.log("🔄 Realtime token changed, setAuth...");
+    realtimeClient.realtime.setAuth(clerkToken);
   }
 
   return realtimeClient;
 };
 
+/* =========================
+   RESET REALTIME CLIENT
+========================= */
 export const resetRealtimeClient = async () => {
   try {
-    // ลบ channel ทั้งหมดก่อน
     if (realtimeClient?.removeAllChannels) {
       await realtimeClient.removeAllChannels();
     }
 
-    // disconnect realtime socket
     if (realtimeClient?.realtime) {
       await realtimeClient.realtime.disconnect();
       console.log("✅ Realtime client disconnected");

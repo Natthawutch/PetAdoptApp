@@ -3,6 +3,7 @@
 // ✅ Fixed: fetchUnreadCount now uses volunteerUuid (Supabase UUID) instead of userId (Clerk ID)
 // ✅ Fixed: Realtime notifications listener uses volunteerUuid
 // ✅ UPDATED: "ช่วยเหลือไม่สำเร็จ" shows TOTAL failed cases (no 7-day filter)
+// ✅ UPDATED: Removed LIVE indicator + Removed "Realtime: ..." text in UI (realtime still runs in background)
 
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
@@ -10,7 +11,6 @@ import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Animated,
   AppState,
   ScrollView,
   StyleSheet,
@@ -76,9 +76,6 @@ export default function VolunteerHome() {
   useEffect(() => {
     realtimeStatusRef.current = realtimeStatus;
   }, [realtimeStatus]);
-
-  // Animation
-  const pulseAnim = useRef(new Animated.Value(1)).current;
 
   // Lifecycles / Refs
   const mountedRef = useRef(true);
@@ -602,35 +599,11 @@ export default function VolunteerHome() {
     }, [fetchUnreadCount]),
   );
 
-  /* --------------------------- Animation --------------------------- */
-
-  useEffect(() => {
-    if (realtimeStatus === "SUBSCRIBED") {
-      const animation = Animated.loop(
-        Animated.sequence([
-          Animated.timing(pulseAnim, {
-            toValue: 1.25,
-            duration: 900,
-            useNativeDriver: true,
-          }),
-          Animated.timing(pulseAnim, {
-            toValue: 1,
-            duration: 900,
-            useNativeDriver: true,
-          }),
-        ]),
-      );
-      animation.start();
-      return () => animation.stop();
-    }
-  }, [realtimeStatus, pulseAnim]);
-
   /* ----------------------------- UI -------------------------------- */
 
   const goReports = () => router.push("/volunteer/reports");
   const goGuide = () => router.push("/volunteer/guide");
   const goNotifications = () => router.push("/volunteer/notifications");
-  const live = realtimeStatus === "SUBSCRIBED";
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
@@ -644,24 +617,10 @@ export default function VolunteerHome() {
                 วันนี้มีภารกิจให้ช่วย{" "}
                 {urgentCount > 0 ? "เร่งด่วน" : "อยู่ในคิว"} พร้อมลุยไหม
               </Text>
-
-              {live && (
-                <Animated.View
-                  style={[
-                    styles.liveIndicator,
-                    { transform: [{ scale: pulseAnim }] },
-                  ]}
-                >
-                  <View style={styles.liveDot} />
-                  <Text style={styles.liveText}>LIVE</Text>
-                </Animated.View>
-              )}
             </View>
 
-            <Text style={styles.syncHint}>
-              อัปเดตล่าสุด {lastSyncLabel} • Realtime:{" "}
-              {live ? "เชื่อมต่อแล้ว" : "กำลังเชื่อมต่อ/หลุด"}
-            </Text>
+            {/* ✅ Removed realtime connection text */}
+            <Text style={styles.syncHint}>อัปเดตล่าสุด {lastSyncLabel}</Text>
           </View>
 
           <TouchableOpacity
@@ -891,23 +850,6 @@ const styles = StyleSheet.create({
   sub: { fontSize: 14, color: "#64748b", flex: 1 },
 
   syncHint: { marginTop: 6, fontSize: 12, color: "#94a3b8" },
-
-  liveIndicator: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: "#f0fdf4",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 12,
-    gap: 4,
-  },
-  liveDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: "#16a34a",
-  },
-  liveText: { fontSize: 10, fontWeight: "800", color: "#16a34a" },
 
   primaryCard: {
     marginTop: 14,

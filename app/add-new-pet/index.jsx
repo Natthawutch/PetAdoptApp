@@ -1,6 +1,7 @@
 import { useAuth, useUser } from "@clerk/clerk-expo";
+import { Picker } from "@react-native-picker/picker";
 import * as ImagePicker from "expo-image-picker";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -20,45 +21,232 @@ import {
   supabase,
 } from "../../config/supabaseClient";
 
+/** -------- Breed Lists -------- */
+const DOG_BREEDS = [
+  "ไม่ทราบ",
+  "พันธุ์ผสม/พันธุ์ทาง",
+  "ชิวาวา",
+  "ชิบะ อินุ",
+  "ปอมเมอเรเนียน",
+  "พุดเดิ้ล",
+  "โกลเด้น รีทรีฟเวอร์",
+  "ลาบราดอร์ รีทรีฟเวอร์",
+  "บีเกิ้ล",
+  "ไซบีเรียน ฮัสกี",
+  "คอร์กี้",
+  "ปั๊ก",
+  "ชเนาเซอร์",
+  "ยอร์คเชียร์ เทอร์เรีย",
+];
+
+const CAT_BREEDS = [
+  "ไม่ทราบ",
+  "พันธุ์ผสม",
+  "เปอร์เซีย",
+  "สก็อตติช โฟลด์",
+  "บริติช ชอร์ตแฮร์",
+  "เมนคูน",
+  "เบงกอล",
+  "แร็กดอลล์",
+  "วิเชียรมาศ",
+  "อเมริกัน ชอร์ตแฮร์",
+];
+
+/** -------- Province List (TH) -------- */
+const THAI_PROVINCES = [
+  "ไม่ระบุ",
+  "กรุงเทพมหานคร",
+  "กระบี่",
+  "กาญจนบุรี",
+  "กาฬสินธุ์",
+  "กำแพงเพชร",
+  "ขอนแก่น",
+  "จันทบุรี",
+  "ฉะเชิงเทรา",
+  "ชลบุรี",
+  "ชัยนาท",
+  "ชัยภูมิ",
+  "ชุมพร",
+  "เชียงราย",
+  "เชียงใหม่",
+  "ตรัง",
+  "ตราด",
+  "ตาก",
+  "นครนายก",
+  "นครปฐม",
+  "นครพนม",
+  "นครราชสีมา",
+  "นครศรีธรรมราช",
+  "นครสวรรค์",
+  "นนทบุรี",
+  "นราธิวาส",
+  "น่าน",
+  "บึงกาฬ",
+  "บุรีรัมย์",
+  "ปทุมธานี",
+  "ประจวบคีรีขันธ์",
+  "ปราจีนบุรี",
+  "ปัตตานี",
+  "พระนครศรีอยุธยา",
+  "พังงา",
+  "พัทลุง",
+  "พิจิตร",
+  "พิษณุโลก",
+  "เพชรบุรี",
+  "เพชรบูรณ์",
+  "แพร่",
+  "พะเยา",
+  "ภูเก็ต",
+  "มหาสารคาม",
+  "มุกดาหาร",
+  "แม่ฮ่องสอน",
+  "ยะลา",
+  "ยโสธร",
+  "ร้อยเอ็ด",
+  "ระนอง",
+  "ระยอง",
+  "ราชบุรี",
+  "ลพบุรี",
+  "ลำปาง",
+  "ลำพูน",
+  "เลย",
+  "ศรีสะเกษ",
+  "สกลนคร",
+  "สงขลา",
+  "สตูล",
+  "สมุทรปราการ",
+  "สมุทรสงคราม",
+  "สมุทรสาคร",
+  "สระแก้ว",
+  "สระบุรี",
+  "สิงห์บุรี",
+  "สุโขทัย",
+  "สุพรรณบุรี",
+  "สุราษฎร์ธานี",
+  "สุรินทร์",
+  "หนองคาย",
+  "หนองบัวลำภู",
+  "อ่างทอง",
+  "อำนาจเจริญ",
+  "อุดรธานี",
+  "อุตรดิตถ์",
+  "อุทัยธานี",
+  "อุบลราชธานี",
+];
+
+/** -------- Vaccine Options -------- */
+const DOG_VACCINES = [
+  "ไม่ทราบ",
+  "วัคซีนรวม (DHPP/5-in-1)",
+  "พิษสุนัขบ้า (Rabies)",
+  "เลปโตสไปโรซิส/ฉี่หนู (Lepto)",
+  "ไอกรนสุนัข/เคนเนลคอฟ (Bordetella)",
+];
+
+const CAT_VACCINES = [
+  "ไม่ทราบ",
+  "วัคซีนรวมแมว (FVRCP/3-in-1)",
+  "พิษสุนัขบ้า (Rabies)",
+  "ลิวคีเมียแมว (FeLV)",
+  "คลามัยเดีย (Chlamydia)",
+];
+
 export default function AddNewPetForm() {
   const { user } = useUser();
   const { getToken } = useAuth();
 
-  // ----- Form States (ตรงตาม Database Columns) -----
+  // ----- Form States -----
   const [petName, setPetName] = useState("");
-  const [category, setCategory] = useState("สุนัข"); // Default เป็นสุนัข
-  const [breed, setBreed] = useState("");
-  const [age, setAge] = useState("");
+  const [category, setCategory] = useState("สุนัข");
+  const [breed, setBreed] = useState("ไม่ทราบ");
+  const [age, setAge] = useState(""); // ไม่ใส่ได้ (จะเก็บเป็น null)
   const [weight, setWeight] = useState("");
   const [sex, setSex] = useState("ผู้");
-  const [address, setAddress] = useState("");
+
+  // รูปแบบการเลี้ยง: ระบบปิด / ระบบเปิด
+  // (ตั้งค่าเริ่มต้นเป็น "ระบบปิด" เพื่อไม่บังคับเลือก แต่มีตัวเลือกให้)
+  const [careType, setCareType] = useState("ระบบปิด");
+
+  // จังหวัด
+  const [province, setProvince] = useState("ไม่ระบุ");
+
   const [about, setAbout] = useState("");
   const [personality, setPersonality] = useState("");
-  const [vaccineHistory, setVaccineHistory] = useState("");
-  const [isNeutered, setIsNeutered] = useState("ยังไม่ได้ทำ");
+
+  // วัคซีน: เลือกจาก dropdown แล้วเพิ่มทันที
+  const [vaccines, setVaccines] = useState([]);
+  const [selectedVaccine, setSelectedVaccine] = useState(""); // ค่าใน dropdown
+
+  // ทำหมัน: บังคับเลือก + มี 3 ตัวเลือก
+  const [isNeutered, setIsNeutered] = useState(""); // "ทำแล้ว" | "ไม่ทำ" | "ไม่ทราบ"
   const [postStatus, setPostStatus] = useState("Available");
 
   // ----- Media States -----
   const [images, setImages] = useState([]);
   const [video, setVideo] = useState(null);
   const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState({
-    current: 0,
-    total: 0,
-  });
+
+  const breedOptions = category === "สุนัข" ? DOG_BREEDS : CAT_BREEDS;
+  const vaccineOptions = category === "สุนัข" ? DOG_VACCINES : CAT_VACCINES;
+
+  /** ขอ permission รูป */
+  useEffect(() => {
+    (async () => {
+      const lib = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (lib.status !== "granted") {
+        Alert.alert(
+          "ขออนุญาตเข้าถึงรูปภาพ",
+          "กรุณาอนุญาตให้แอปเข้าถึงรูปภาพเพื่ออัปโหลด",
+        );
+      }
+    })();
+  }, []);
+
+  /* -------------------- Vaccine Helpers -------------------- */
+
+  const removeVaccine = (item) => {
+    setVaccines((prev) => prev.filter((x) => x !== item));
+  };
+
+  const onSelectVaccine = (val) => {
+    setSelectedVaccine(val);
+
+    // เลือก placeholder
+    if (!val) return;
+
+    // เลือก "ไม่ทราบ" => เคลียร์ทั้งหมด
+    if (val === "ไม่ทราบ") {
+      setVaccines([]);
+      setSelectedVaccine(""); // reset กลับไป placeholder
+      return;
+    }
+
+    // เพิ่มทันทีแบบไม่ซ้ำ
+    setVaccines((prev) => (prev.includes(val) ? prev : [...prev, val]));
+
+    // reset dropdown กลับไป placeholder
+    setSelectedVaccine("");
+  };
 
   /* -------------------- Media Picker Logic -------------------- */
 
+  // เลือกทีละรูป + ครอปได้
   const pickImages = async () => {
-    if (images.length >= 5)
+    if (images.length >= 5) {
       return Alert.alert("จำกัดรูป", "เลือกได้สูงสุด 5 รูป");
+    }
+
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsMultipleSelection: true,
-      selectionLimit: 5 - images.length,
-      quality: 0.7,
+      allowsMultipleSelection: false,
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
     });
-    if (!result.canceled) setImages([...images, ...result.assets]);
+
+    if (!result.canceled) {
+      setImages((prev) => [...prev, result.assets[0]]);
+    }
   };
 
   const pickVideo = async () => {
@@ -67,12 +255,14 @@ export default function AddNewPetForm() {
       allowsEditing: true,
       quality: 0.7,
     });
+
     if (!result.canceled) setVideo(result.assets[0]);
   };
 
   const uploadFile = async (uri, userId, isVideo = false) => {
     const response = await fetch(uri);
     const arrayBuffer = await response.arrayBuffer();
+
     const ext = isVideo ? "mp4" : "jpg";
     const bucket = isVideo ? "pets-videos" : "pets-images";
     const path = `${userId}/${Date.now()}-${Math.random()
@@ -86,21 +276,28 @@ export default function AddNewPetForm() {
       });
 
     if (error) throw error;
+
     return supabase.storage.from(bucket).getPublicUrl(path).data.publicUrl;
   };
 
   const resetForm = () => {
     setPetName("");
     setCategory("สุนัข");
-    setBreed("");
+    setBreed("ไม่ทราบ");
     setAge("");
     setWeight("");
     setSex("ผู้");
-    setAddress("");
+
+    setCareType("ระบบปิด");
+
+    setProvince("ไม่ระบุ");
     setAbout("");
     setPersonality("");
-    setVaccineHistory("");
-    setIsNeutered("ยังไม่ได้ทำ");
+
+    setVaccines([]);
+    setSelectedVaccine("");
+
+    setIsNeutered(""); // reset ให้บังคับเลือกใหม่
     setPostStatus("Available");
 
     setImages([]);
@@ -110,10 +307,11 @@ export default function AddNewPetForm() {
   /* -------------------- Submit Logic -------------------- */
 
   const submitPet = async () => {
-    if (!petName || !category || !sex || images.length === 0) {
+    // บังคับ: ชื่อ, ประเภท, เพศ, ทำหมัน, รูปอย่างน้อย 1
+    if (!petName || !category || !sex || !isNeutered || images.length === 0) {
       return Alert.alert(
         "ข้อมูลไม่ครบ",
-        "กรุณาระบุชื่อ ประเภท เพศ และเพิ่มรูปอย่างน้อย 1 รูป",
+        "กรุณาระบุชื่อ ประเภท เพศ สถานะทำหมัน และเพิ่มรูปอย่างน้อย 1 รูป",
       );
     }
 
@@ -122,32 +320,47 @@ export default function AddNewPetForm() {
       const token = await getToken({ template: "supabase" });
       const supabaseClerk = createClerkSupabaseClient(token);
 
-      // 1. Upload Images
       const imageUrls = await Promise.all(
         images.map((img) => uploadFile(img.uri, user.id, false)),
       );
 
-      // 2. Upload Video (if any)
-      let videoUrl = video ? await uploadFile(video.uri, user.id, true) : null;
+      const videoUrl = video
+        ? await uploadFile(video.uri, user.id, true)
+        : null;
 
-      // 3. Insert into Database
+      const vaccineHistoryValue =
+        vaccines.length === 0 ? "ไม่ทราบ" : vaccines.join(", ");
+
       const { error } = await supabaseClerk.from("pets").insert([
         {
           name: petName,
           category,
           breed,
-          age: parseInt(age) || 0,
-          weight: parseFloat(weight) || 0,
+
+          age: age.trim() === "" ? null : parseInt(age, 10),
+          weight: weight.trim() === "" ? null : parseFloat(weight),
+
           sex,
-          address,
+
+          // จังหวัด
+          address: province,
+
+          // รูปแบบการเลี้ยง: ต้องมีคอลัมน์ care_type ในตาราง pets
+          care_type: careType,
+
           about,
           personality,
-          vaccine_history: vaccineHistory,
+
+          vaccine_history: vaccineHistoryValue,
+
+          // ทำหมัน: "ทำแล้ว" | "ไม่ทำ" | "ไม่ทราบ"
           is_neutered: isNeutered,
           post_status: postStatus,
-          image_url: imageUrls[0], // รูปหลัก (รูปแรก)
-          images: imageUrls, // บันทึกเป็น Array ของ URL
+
+          image_url: imageUrls[0],
+          images: imageUrls,
           video_url: videoUrl,
+
           user_id: user.id,
           username: user.fullName || user.firstName || "Unknown User",
           email: user.primaryEmailAddress?.emailAddress || "",
@@ -158,23 +371,16 @@ export default function AddNewPetForm() {
       if (error) throw error;
 
       Alert.alert("สำเร็จ! 🎉", "เพิ่มข้อมูลน้องเรียบร้อยแล้ว", [
-        {
-          text: "ตกลง",
-          onPress: () => {
-            resetForm();
-          },
-        },
+        { text: "ตกลง", onPress: resetForm },
       ]);
-
-      // Reset Form...
     } catch (err) {
-      Alert.alert("เกิดข้อผิดพลาด", err.message);
+      Alert.alert("เกิดข้อผิดพลาด", err?.message || "ไม่ทราบสาเหตุ");
     } finally {
       setUploading(false);
     }
   };
 
-  /* -------------------- UI Components -------------------- */
+  /* -------------------- UI -------------------- */
 
   return (
     <AuthWrapper>
@@ -195,7 +401,11 @@ export default function AddNewPetForm() {
 
           {/* Media Section */}
           <View style={styles.card}>
-            <Text style={styles.label}>รูปภาพน้องๆ (สูงสุด 5 รูป) *</Text>
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>รูปภาพน้องๆ (สูงสุด 5 รูป) </Text>
+              <Text style={styles.requiredStar}>*</Text>
+            </View>
+
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -204,6 +414,7 @@ export default function AddNewPetForm() {
               <TouchableOpacity style={styles.addMediaBox} onPress={pickImages}>
                 <Text style={styles.plusIcon}>+</Text>
                 <Text style={styles.addText}>{images.length}/5</Text>
+                <Text style={styles.cropHint}>ครอปได้</Text>
               </TouchableOpacity>
 
               {images.map((img, index) => (
@@ -241,11 +452,15 @@ export default function AddNewPetForm() {
             )}
           </View>
 
-          {/* Base Information Section */}
+          {/* Base Info */}
           <View style={styles.card}>
             <Text style={styles.sectionTitle}>ข้อมูลทั่วไป</Text>
 
-            <Text style={styles.label}>ประเภท *</Text>
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>ประเภท </Text>
+              <Text style={styles.requiredStar}>*</Text>
+            </View>
+
             <View style={styles.choiceRow}>
               {["สุนัข", "แมว"].map((cat) => (
                 <TouchableOpacity
@@ -254,7 +469,14 @@ export default function AddNewPetForm() {
                     styles.choiceBtn,
                     category === cat && styles.categoryActive,
                   ]}
-                  onPress={() => setCategory(cat)}
+                  onPress={() => {
+                    setCategory(cat);
+                    setBreed("ไม่ทราบ");
+
+                    // reset vaccine when switch category
+                    setVaccines([]);
+                    setSelectedVaccine("");
+                  }}
                 >
                   <Text
                     style={[
@@ -268,6 +490,10 @@ export default function AddNewPetForm() {
               ))}
             </View>
 
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>ชื่อน้อง </Text>
+              <Text style={styles.requiredStar}>*</Text>
+            </View>
             <TextInput
               style={styles.input}
               placeholder="ชื่อน้อง"
@@ -275,19 +501,45 @@ export default function AddNewPetForm() {
               onChangeText={setPetName}
             />
 
-            <TextInput
-              style={styles.input}
-              placeholder="สายพันธุ์ (เช่น พันธุ์ทาง, ชิบะ)"
-              value={breed}
-              onChangeText={setBreed}
-            />
+            <Text style={styles.label}>สายพันธุ์</Text>
+            <View style={styles.pickerBox}>
+              <Picker
+                selectedValue={breed}
+                onValueChange={(val) => setBreed(val)}
+              >
+                {breedOptions.map((b) => (
+                  <Picker.Item key={b} label={b} value={b} />
+                ))}
+              </Picker>
+            </View>
+
+            {/* รูปแบบการเลี้ยง: ระบบปิด/ระบบเปิด */}
+            <Text style={styles.label}>รูปแบบการเลี้ยง</Text>
+            <View style={styles.choiceRow}>
+              {["ระบบปิด", "ระบบเปิด"].map((t) => (
+                <TouchableOpacity
+                  key={t}
+                  style={[styles.choiceBtn, careType === t && styles.sexActive]}
+                  onPress={() => setCareType(t)}
+                >
+                  <Text
+                    style={[
+                      styles.choiceText,
+                      careType === t && styles.choiceTextActive,
+                    ]}
+                  >
+                    {t === "ระบบปิด" ? "🏠 ระบบปิด" : "🌳 ระบบเปิด"}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
 
             <View style={styles.row}>
               <View style={{ flex: 1, marginRight: 10 }}>
                 <Text style={styles.label}>อายุ (ปี)</Text>
                 <TextInput
                   style={styles.input}
-                  placeholder="0"
+                  placeholder="ไม่ทราบก็เว้นว่างได้"
                   keyboardType="numeric"
                   value={age}
                   onChangeText={setAge}
@@ -297,7 +549,7 @@ export default function AddNewPetForm() {
                 <Text style={styles.label}>น้ำหนัก (กก.)</Text>
                 <TextInput
                   style={styles.input}
-                  placeholder="0.0"
+                  placeholder="ไม่ทราบก็เว้นว่างได้"
                   keyboardType="numeric"
                   value={weight}
                   onChangeText={setWeight}
@@ -305,7 +557,11 @@ export default function AddNewPetForm() {
               </View>
             </View>
 
-            <Text style={styles.label}>เพศ *</Text>
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>เพศ </Text>
+              <Text style={styles.requiredStar}>*</Text>
+            </View>
+
             <View style={styles.choiceRow}>
               {["ผู้", "เมีย"].map((s) => (
                 <TouchableOpacity
@@ -326,25 +582,64 @@ export default function AddNewPetForm() {
             </View>
           </View>
 
-          {/* Health & Detail Section */}
+          {/* Health & Location */}
           <View style={styles.card}>
             <Text style={styles.sectionTitle}>สุขภาพและสถานที่</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="สถานที่ (เช่น เขต, จังหวัด)"
-              value={address}
-              onChangeText={setAddress}
-            />
-            <TextInput
-              style={styles.input}
-              placeholder="ประวัติการได้รับวัคซีน"
-              value={vaccineHistory}
-              onChangeText={setVaccineHistory}
-            />
 
-            <Text style={styles.label}>การทำหมัน</Text>
+            <Text style={styles.label}>จังหวัด</Text>
+            <View style={styles.pickerBox}>
+              <Picker
+                selectedValue={province}
+                onValueChange={(val) => setProvince(val)}
+              >
+                {THAI_PROVINCES.map((p) => (
+                  <Picker.Item key={p} label={p} value={p} />
+                ))}
+              </Picker>
+            </View>
+
+            <Text style={styles.label}>ประวัติการฉีดวัคซีน</Text>
+
+            {/* Dropdown วัคซีน (เลือกแล้วเพิ่มอัตโนมัติ) */}
+            <View style={styles.pickerBox}>
+              <Picker
+                selectedValue={selectedVaccine}
+                onValueChange={onSelectVaccine}
+              >
+                <Picker.Item label="-- เลือกวัคซีน --" value="" />
+                {vaccineOptions.map((v) => (
+                  <Picker.Item key={v} label={v} value={v} />
+                ))}
+              </Picker>
+            </View>
+
+            {/* รายการที่เลือกแล้ว */}
+            {vaccines.length > 0 ? (
+              <View style={{ marginTop: 10 }}>
+                {vaccines.map((v) => (
+                  <View key={v} style={styles.vaccineRow}>
+                    <Text style={styles.vaccineRowText}>✅ {v}</Text>
+                    <TouchableOpacity onPress={() => removeVaccine(v)}>
+                      <Text style={styles.removeVaccineText}>ลบ</Text>
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <Text style={styles.vaccineHint}>
+                ถ้าไม่รู้ เลือก “ไม่ทราบ” หรือไม่เลือกอะไรเลย ระบบจะบันทึกเป็น
+                “ไม่ทราบ”
+              </Text>
+            )}
+
+            {/* ทำหมัน: 3 ตัวเลือก + บังคับ */}
+            <View style={styles.labelRow}>
+              <Text style={styles.label}>การทำหมัน </Text>
+              <Text style={styles.requiredStar}>*</Text>
+            </View>
+
             <View style={styles.choiceRow}>
-              {["ทำแล้ว", "ยังไม่ได้ทำ"].map((item) => (
+              {["ทำแล้ว", "ไม่ทำ", "ไม่ทราบ"].map((item) => (
                 <TouchableOpacity
                   key={item}
                   style={[
@@ -366,15 +661,18 @@ export default function AddNewPetForm() {
             </View>
           </View>
 
+          {/* About */}
           <View style={styles.card}>
             <Text style={styles.sectionTitle}>เกี่ยวกับน้อง</Text>
+
             <TextInput
               style={[styles.input, styles.textArea]}
-              placeholder="ลักษณะนิสัย (เช่น เข้ากับแมวตัวอื่นได้ง่าย)"
+              placeholder="ลักษณะนิสัย (เช่น เข้ากับตัวอื่นได้ง่าย)"
               multiline
               value={personality}
               onChangeText={setPersonality}
             />
+
             <TextInput
               style={[styles.input, styles.textArea]}
               placeholder="รายละเอียดอื่นๆ หรือประวัติความเป็นมาของน้อง"
@@ -384,7 +682,7 @@ export default function AddNewPetForm() {
             />
           </View>
 
-          {/* Submit Button */}
+          {/* Submit */}
           <TouchableOpacity
             style={[styles.submitBtn, uploading && { opacity: 0.7 }]}
             onPress={submitPet}
@@ -405,10 +703,20 @@ export default function AddNewPetForm() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: "#F8F9FB", paddingHorizontal: 20 },
+  container: {
+    flex: 1,
+    backgroundColor: "#F8F9FB",
+    paddingHorizontal: 20,
+    paddingTop: 20,
+  },
   header: { marginTop: 30, marginBottom: 20 },
   title: { fontSize: 28, fontWeight: "800", color: "#1F2937" },
   subtitle: { fontSize: 14, color: "#6B7280", marginTop: 4 },
+
+  // Label + Required star
+  labelRow: { flexDirection: "row", alignItems: "center" },
+  requiredStar: { color: "#EF4444", fontWeight: "800" },
+
   card: {
     backgroundColor: "#FFF",
     borderRadius: 20,
@@ -442,12 +750,21 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: "#E5E7EB",
   },
+  pickerBox: {
+    backgroundColor: "#F9FAFB",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    marginBottom: 12,
+    overflow: "hidden",
+  },
   textArea: { height: 90, textAlignVertical: "top" },
   row: { flexDirection: "row" },
+
   mediaRow: { flexDirection: "row", marginBottom: 15 },
   addMediaBox: {
-    width: 80,
-    height: 80,
+    width: 90,
+    height: 90,
     backgroundColor: "#EEF2FF",
     borderRadius: 15,
     borderStyle: "dashed",
@@ -458,8 +775,10 @@ const styles = StyleSheet.create({
   },
   plusIcon: { fontSize: 28, color: "#6366F1" },
   addText: { fontSize: 12, color: "#6366F1", fontWeight: "600" },
+  cropHint: { fontSize: 10, color: "#6366F1", marginTop: 2 },
+
   previewWrapper: { marginLeft: 12, position: "relative" },
-  previewImage: { width: 80, height: 80, borderRadius: 15 },
+  previewImage: { width: 90, height: 90, borderRadius: 15 },
   removeBadge: {
     position: "absolute",
     top: -6,
@@ -474,6 +793,7 @@ const styles = StyleSheet.create({
     borderColor: "#FFF",
   },
   removeText: { color: "#FFF", fontSize: 10, fontWeight: "bold" },
+
   videoPicker: {
     padding: 16,
     borderRadius: 12,
@@ -493,6 +813,7 @@ const styles = StyleSheet.create({
   },
   videoStatusText: { color: "#166534", fontWeight: "600" },
   deleteLink: { color: "#EF4444", fontWeight: "700" },
+
   choiceRow: { flexDirection: "row", marginBottom: 15 },
   choiceBtn: {
     flex: 1,
@@ -506,8 +827,36 @@ const styles = StyleSheet.create({
   },
   choiceText: { color: "#4B5563", fontWeight: "600" },
   choiceTextActive: { color: "#FFF" },
-  categoryActive: { backgroundColor: "#F59E0B" }, // สีส้ม Amber สำหรับประเภท
-  sexActive: { backgroundColor: "#6366F1" }, // สี Indigo สำหรับเพศและอื่นๆ
+  categoryActive: { backgroundColor: "#F59E0B" },
+  sexActive: { backgroundColor: "#6366F1" },
+
+  vaccineRow: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    backgroundColor: "#F9FAFB",
+    borderWidth: 1,
+    borderColor: "#E5E7EB",
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 8,
+  },
+  vaccineRowText: {
+    color: "#374151",
+    fontWeight: "600",
+    flex: 1,
+    paddingRight: 10,
+  },
+  removeVaccineText: {
+    color: "#EF4444",
+    fontWeight: "800",
+  },
+  vaccineHint: {
+    color: "#6B7280",
+    fontSize: 12,
+    marginBottom: 12,
+  },
+
   submitBtn: {
     backgroundColor: "#6366F1",
     padding: 18,

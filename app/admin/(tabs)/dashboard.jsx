@@ -234,7 +234,7 @@ export default function Dashboard() {
   const Content = () => (
     <View>
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>ภาพรวมระบบ</Text>
+        <Text style={styles.headerTitle}>แดชบอร์ด</Text>
       </View>
 
       <View style={{ paddingTop: 16 }}>

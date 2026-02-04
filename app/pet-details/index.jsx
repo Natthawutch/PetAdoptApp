@@ -1,3 +1,10 @@
+/* ============================
+   PetDetails.jsx  (Full Code)
+   ✅ กันส่งซ้ำ: ถ้ามี adoption_requests ของ user+pet เป็น pending/approved จะกดส่งไม่ได้
+   ✅ ยกเลิกได้: ยกเลิกแบบ "ชัวร์" โดย update จาก myAdoptionRequest.id (ไม่พึ่ง status)
+   ✅ มี debugLog: โชว์ rows ก่อน/หลังยกเลิก เพื่อหาว่าเป็น RLS หรือ status ไม่ตรง
+   ⚠️ ถ้า LOG cancelled rows ยังเป็น 0 และ error ว่าง = RLS UPDATE policy บล็อก 99%
+============================ */
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useNavigation, useRouter } from "expo-router";
@@ -41,6 +48,10 @@ export default function PetDetails() {
   const [chatLoading, setChatLoading] = useState(false);
   const [buttonScale] = useState(new Animated.Value(1));
 
+  // ✅ my adoption request
+  const [myAdoptionRequest, setMyAdoptionRequest] = useState(null);
+  const [reqLoading, setReqLoading] = useState(false);
+
   useEffect(() => {
     navigation.setOptions({ headerShown: false });
     fetchPetAndOwner();
@@ -49,6 +60,11 @@ export default function PetDetails() {
 
   useEffect(() => {
     if (user && pet) checkFavorite();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, pet]);
+
+  useEffect(() => {
+    if (user && pet) fetchMyAdoptionRequest();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, pet]);
 
@@ -215,7 +231,55 @@ export default function PetDetails() {
   };
 
   /* =======================
-     Adoption Request
+     Adoption Request: fetch ของฉัน
+     - หา active (pending/approved) ก่อนเสมอ
+  ======================= */
+  const fetchMyAdoptionRequest = async () => {
+    if (!user || !pet) return;
+
+    try {
+      const token = await getToken({ template: "supabase", skipCache: true });
+      if (!token) return;
+
+      const supabaseAuth = createClerkSupabaseClient(token);
+
+      const { data: active, error: activeErr } = await supabaseAuth
+        .from("adoption_requests")
+        .select("id,status,created_at,pet_id,requester_id")
+        .eq("pet_id", pet.id)
+        .eq("requester_id", user.id)
+        .in("status", ["pending", "approved"])
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (activeErr) throw activeErr;
+
+      if (active) {
+        setMyAdoptionRequest(active);
+        return;
+      }
+
+      const { data: latest, error: latestErr } = await supabaseAuth
+        .from("adoption_requests")
+        .select("id,status,created_at,pet_id,requester_id")
+        .eq("pet_id", pet.id)
+        .eq("requester_id", user.id)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (latestErr) throw latestErr;
+
+      setMyAdoptionRequest(latest || null);
+    } catch (e) {
+      console.log("❌ fetchMyAdoptionRequest error:", e);
+      setMyAdoptionRequest(null);
+    }
+  };
+
+  /* =======================
+     Adoption Request: open + กันส่งซ้ำ
   ======================= */
   const openAdoptionRequest = async () => {
     if (!user) {
@@ -229,13 +293,170 @@ export default function PetDetails() {
       return;
     }
 
-    const verified = await ensureVerifiedBeforeRequest();
-    if (!verified.ok) return;
+    setReqLoading(true);
+    try {
+      const token = await getToken({ template: "supabase", skipCache: true });
+      if (!token) {
+        Alert.alert("เกิดข้อผิดพลาด", "ไม่สามารถยืนยันตัวตนได้");
+        return;
+      }
 
-    router.push({
-      pathname: "/adoption-request/[petId]",
-      params: { petId: pet.id },
-    });
+      const supabaseAuth = createClerkSupabaseClient(token);
+
+      const { data: active, error } = await supabaseAuth
+        .from("adoption_requests")
+        .select("id,status,created_at")
+        .eq("pet_id", pet.id)
+        .eq("requester_id", user.id)
+        .in("status", ["pending", "approved"])
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (error) throw error;
+
+      if (active) {
+        setMyAdoptionRequest(active);
+        Alert.alert(
+          "ส่งคำขอแล้ว",
+          active.status === "pending"
+            ? "คุณส่งคำขอไปแล้ว และกำลังรอการตอบกลับ"
+            : "คำขอของคุณได้รับการอนุมัติแล้ว",
+        );
+        return;
+      }
+
+      const verified = await ensureVerifiedBeforeRequest();
+      if (!verified.ok) return;
+
+      router.push({
+        pathname: "/adoption-request/[petId]",
+        params: { petId: pet.id },
+      });
+    } catch (e) {
+      console.log("❌ openAdoptionRequest error:", e);
+      Alert.alert("ผิดพลาด", e?.message || "ไม่สามารถตรวจสอบคำขอได้");
+    } finally {
+      setReqLoading(false);
+    }
+  };
+
+  /* =======================
+     Debug helper (optional)
+     - จะ log ทุก request ของ user+pet เพื่อดู status จริง
+  ======================= */
+  const debugMyRequests = async () => {
+    if (!user || !pet) return;
+
+    try {
+      const token = await getToken({ template: "supabase", skipCache: true });
+      if (!token) return;
+
+      const supabaseAuth = createClerkSupabaseClient(token);
+
+      const { data, error } = await supabaseAuth
+        .from("adoption_requests")
+        .select("id,status,created_at,pet_id,requester_id")
+        .eq("pet_id", pet.id)
+        .eq("requester_id", user.id)
+        .order("created_at", { ascending: false });
+
+      console.log("🧾 my requests (all):", data, error);
+    } catch (e) {
+      console.log("❌ debugMyRequests error:", e);
+    }
+  };
+
+  /* =======================
+     Adoption Request: cancel
+     - update จาก myAdoptionRequest.id (ชัวร์สุด)
+     - แล้วตามด้วย update ทุก pending (กันข้อมูลซ้ำ)
+     - ถ้ายังได้ 0 rows (และ error ว่าง) = RLS UPDATE policy บล็อกเกือบแน่นอน
+  ======================= */
+  const cancelMyAdoptionRequest = async () => {
+    if (!user || !pet) return;
+
+    if (!myAdoptionRequest?.id) {
+      Alert.alert("ไม่พบคำขอของคุณ", "ลองเข้าใหม่อีกครั้ง");
+      return;
+    }
+
+    Alert.alert("ยกเลิกคำขอ", "คุณแน่ใจหรือไม่ว่าต้องการยกเลิกคำขอรับเลี้ยง?", [
+      { text: "ไม่ยกเลิก", style: "cancel" },
+      {
+        text: "ยกเลิกคำขอ",
+        style: "destructive",
+        onPress: async () => {
+          setReqLoading(true);
+          try {
+            const token = await getToken({
+              template: "supabase",
+              skipCache: true,
+            });
+            if (!token) {
+              Alert.alert("เกิดข้อผิดพลาด", "ไม่สามารถยืนยันตัวตนได้");
+              return;
+            }
+
+            const supabaseAuth = createClerkSupabaseClient(token);
+
+            // (optional) log ก่อนยกเลิก
+            await debugMyRequests();
+
+            // ✅ 1) ยกเลิก record ที่ UI ถืออยู่ (id นี้)
+            const { data: byIdData, error: byIdErr } = await supabaseAuth
+              .from("adoption_requests")
+              .update({ status: "cancelled" })
+              .eq("id", myAdoptionRequest.id)
+              .select("id,status,created_at");
+
+            if (byIdErr) throw byIdErr;
+
+            console.log("✅ cancel by id rows:", byIdData?.length, byIdData);
+
+            // ✅ 2) กันเคสเคยส่งซ้ำ: ยกเลิกทุก pending ของ user+pet
+            const { data: pendingData, error: pendingErr } = await supabaseAuth
+              .from("adoption_requests")
+              .update({ status: "cancelled" })
+              .eq("pet_id", pet.id)
+              .eq("requester_id", user.id)
+              .in("status", ["pending", "approved"]) // ถ้าคุณอยากยกเลิกเฉพาะ pending ให้เปลี่ยนเป็น .eq("status","pending")
+              .select("id,status,created_at");
+
+            if (pendingErr) throw pendingErr;
+
+            console.log(
+              "✅ cancel active rows:",
+              pendingData?.length,
+              pendingData,
+            );
+
+            // ถ้าไม่โดนเลย -> RLS UPDATE policy บล็อกเกือบแน่นอน
+            if (
+              (byIdData?.length || 0) === 0 &&
+              (pendingData?.length || 0) === 0
+            ) {
+              Alert.alert(
+                "ยกเลิกไม่ได้",
+                "ระบบไม่อนุญาตให้แก้ไขคำขอ (น่าจะติด RLS policy ของ adoption_requests)\n\nให้ไปเพิ่ม UPDATE policy: requester_id = auth.uid()",
+              );
+              return;
+            }
+
+            Alert.alert("สำเร็จ", "ยกเลิกคำขอแล้ว");
+            await fetchMyAdoptionRequest();
+
+            // (optional) log หลังยกเลิก
+            await debugMyRequests();
+          } catch (e) {
+            console.log("❌ cancelMyAdoptionRequest error:", e);
+            Alert.alert("ยกเลิกไม่สำเร็จ", e?.message || "เกิดข้อผิดพลาด");
+          } finally {
+            setReqLoading(false);
+          }
+        },
+      },
+    ]);
   };
 
   /* =======================
@@ -330,9 +551,10 @@ export default function PetDetails() {
   }
 
   const isAdopted = pet.adoption_status === "adopted";
+  const myReqStatus = myAdoptionRequest?.status || null;
+  const hasActiveRequest = ["pending", "approved"].includes(myReqStatus);
 
   return (
-    // ✅ ให้สีม่วง “เต็มด้านบน” + safe area
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.page}>
         <ScrollView
@@ -349,31 +571,53 @@ export default function PetDetails() {
           <OwnerInfo pet={pet} owner={owner} onMessagePress={InitiateChat} />
         </ScrollView>
 
-        {/* ✅ Bottom bar แยกชัด ไม่ทับเนื้อหา */}
         <View style={styles.bottomBar}>
           <Animated.View style={{ transform: [{ scale: buttonScale }] }}>
             <TouchableOpacity
-              style={[styles.adoptBtn, isAdopted && styles.adoptedBtn]}
+              style={[
+                styles.adoptBtn,
+                (isAdopted || hasActiveRequest || reqLoading) &&
+                  styles.adoptedBtn,
+              ]}
               onPress={() => {
                 animateButton();
                 openAdoptionRequest();
               }}
-              disabled={isAdopted}
+              disabled={isAdopted || hasActiveRequest || reqLoading}
               activeOpacity={0.9}
             >
               <LinearGradient
                 colors={
-                  isAdopted
+                  isAdopted || hasActiveRequest
                     ? ["#9CA3AF", "#6B7280"]
                     : [Colors.PURPLE, "#8B5FBF"]
                 }
                 style={styles.gradientButton}
               >
                 <Text style={styles.adoptBtnText}>
-                  {isAdopted ? "ถูกรับเลี้ยงแล้ว 🐾" : "ส่งคำขอรับเลี้ยง"}
+                  {isAdopted
+                    ? "ถูกรับเลี้ยงแล้ว 🐾"
+                    : hasActiveRequest
+                      ? myReqStatus === "pending"
+                        ? "ส่งคำขอแล้ว (รออนุมัติ)"
+                        : "คำขอได้รับอนุมัติแล้ว"
+                      : reqLoading
+                        ? "กำลังตรวจสอบ..."
+                        : "ส่งคำขอรับเลี้ยง"}
                 </Text>
               </LinearGradient>
             </TouchableOpacity>
+
+            {myReqStatus === "pending" && (
+              <TouchableOpacity
+                style={[styles.cancelBtn, reqLoading && { opacity: 0.7 }]}
+                onPress={cancelMyAdoptionRequest}
+                disabled={reqLoading}
+                activeOpacity={0.9}
+              >
+                <Text style={styles.cancelBtnText}>ยกเลิกคำขอ</Text>
+              </TouchableOpacity>
+            )}
 
             {chatLoading ? (
               <View style={{ marginTop: 10, alignItems: "center" }}>
@@ -393,7 +637,7 @@ export default function PetDetails() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: Colors.PURPLE, // ✅ ทำให้ด้านบนเต็มเป็นสีม่วง
+    backgroundColor: Colors.PURPLE,
     paddingTop: 25,
   },
   page: {
@@ -406,7 +650,7 @@ const styles = StyleSheet.create({
     backgroundColor: "#fff",
   },
   scrollContent: {
-    paddingBottom: 140, // ✅ กันปุ่มทับเนื้อหา (สูงกว่าปุ่มนิดนึง)
+    paddingBottom: 160,
   },
 
   bottomBar: {
@@ -433,5 +677,20 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 18,
     fontWeight: "600",
+  },
+
+  cancelBtn: {
+    marginTop: 10,
+    paddingVertical: 14,
+    borderRadius: 30,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#FCA5A5",
+    backgroundColor: "#FEF2F2",
+  },
+  cancelBtnText: {
+    color: "#EF4444",
+    fontSize: 16,
+    fontWeight: "700",
   },
 });

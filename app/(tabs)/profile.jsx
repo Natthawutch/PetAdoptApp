@@ -32,6 +32,9 @@ export default function Profile() {
   const [adoptedByMeCount, setAdoptedByMeCount] = useState(0);
   const [myVolunteerRequest, setMyVolunteerRequest] = useState(null);
 
+  // ✅ เพิ่ม state สำหรับ "ดูเพิ่มเติม"
+  const [showAllPosts, setShowAllPosts] = useState(false);
+
   const clerkId = user?.id ?? null;
 
   const loadProfile = async () => {
@@ -96,6 +99,10 @@ export default function Profile() {
       setProfile(finalProfile);
       setPosts(petPosts || []);
       setAdoptedByMeCount(adoptedRequests?.length || 0);
+
+      // ✅ ถ้าโพสต์เหลือ <=4 ให้บังคับย่อ/ขยายให้สมเหตุสมผล
+      // (กันเคสลบโพสต์แล้ว state ค้าง)
+      if ((petPosts || []).length <= 4) setShowAllPosts(false);
     } catch (e) {
       console.log("❌ loadProfile error:", e);
       Alert.alert("ข้อผิดพลาด", e?.message || "โหลดข้อมูลไม่สำเร็จ");
@@ -195,7 +202,12 @@ export default function Profile() {
               return;
             }
 
-            setPosts((prev) => prev.filter((p) => p.id !== petId));
+            setPosts((prev) => {
+              const next = prev.filter((p) => p.id !== petId);
+              if (next.length <= 4) setShowAllPosts(false); // ✅ กัน state ค้าง
+              return next;
+            });
+
             Alert.alert("สำเร็จ", "ลบโพสต์แล้ว");
           } catch (e) {
             console.log("❌ deletePost exception:", e);
@@ -232,10 +244,15 @@ export default function Profile() {
   const isAdmin = profile?.role === "admin";
   const isPending = myVolunteerRequest?.status === "pending";
 
-  // ✅ Verification status (เพิ่มตามที่ขอ)
+  // ✅ Verification status
   const verificationStatus = profile?.verification_status || "unverified";
   const isVerified = verificationStatus === "verified";
   const isVerifyPending = verificationStatus === "pending";
+
+  // ✅ แสดงโพสต์แค่ 4 ก่อน + ปุ่มดูเพิ่มเติม
+  const VISIBLE_COUNT = 4;
+  const hasMorePosts = posts.length > VISIBLE_COUNT;
+  const visiblePosts = showAllPosts ? posts : posts.slice(0, VISIBLE_COUNT);
 
   return (
     <ScrollView
@@ -307,7 +324,7 @@ export default function Profile() {
             </Text>
           </View>
 
-          {/* ✅ Verification Card */}
+          {/* Verification Card */}
           <View
             style={[
               styles.verifyCard,
@@ -443,68 +460,89 @@ export default function Profile() {
         </View>
 
         {posts.length > 0 ? (
-          <View style={styles.postsGrid}>
-            {posts.map((item) => {
-              const isOwner = item.user_id === clerkId;
+          <>
+            <View style={styles.postsGrid}>
+              {visiblePosts.map((item) => {
+                const isOwner = item.user_id === clerkId;
 
-              return (
-                <View key={item.id} style={styles.petCard}>
-                  <Pressable
-                    style={styles.petPressArea}
-                    onPress={() =>
-                      router.push({
-                        pathname: "/pet-details",
-                        params: { id: item.id },
-                      })
-                    }
-                  >
-                    <Image
-                      source={{ uri: item.image_url }}
-                      style={styles.petImage}
-                    />
+                return (
+                  <View key={item.id} style={styles.petCard}>
+                    <Pressable
+                      style={styles.petPressArea}
+                      onPress={() =>
+                        router.push({
+                          pathname: "/pet-details",
+                          params: { id: item.id },
+                        })
+                      }
+                    >
+                      <Image
+                        source={{ uri: item.image_url }}
+                        style={styles.petImage}
+                      />
 
-                    <View style={styles.petInfo}>
-                      <Text style={styles.petName} numberOfLines={1}>
-                        {item.name}
-                      </Text>
-                      <View style={styles.petMeta}>
-                        <Ionicons name="location" size={12} color="#9ca3af" />
-                        <Text style={styles.petMetaText} numberOfLines={1}>
-                          {item.address || "ไม่ระบุตำแหน่ง"}
+                      <View style={styles.petInfo}>
+                        <Text style={styles.petName} numberOfLines={1}>
+                          {item.name}
                         </Text>
+                        <View style={styles.petMeta}>
+                          <Ionicons name="location" size={12} color="#9ca3af" />
+                          <Text style={styles.petMetaText} numberOfLines={1}>
+                            {item.address || "ไม่ระบุตำแหน่ง"}
+                          </Text>
+                        </View>
                       </View>
-                    </View>
-                  </Pressable>
+                    </Pressable>
 
-                  {isOwner && (
-                    <View style={styles.actionRow}>
-                      <TouchableOpacity
-                        style={[styles.actionBtn, styles.editActionBtn]}
-                        onPress={() => goEditPost(item.id)}
-                      >
-                        <Ionicons
-                          name="create-outline"
-                          size={16}
-                          color="#3b82f6"
-                        />
-                      </TouchableOpacity>
+                    {isOwner && (
+                      <View style={styles.actionRow}>
+                        <TouchableOpacity
+                          style={[styles.actionBtn, styles.editActionBtn]}
+                          onPress={() => goEditPost(item.id)}
+                        >
+                          <Ionicons
+                            name="create-outline"
+                            size={16}
+                            color="#3b82f6"
+                          />
+                        </TouchableOpacity>
 
-                      <TouchableOpacity
-                        style={[styles.actionBtn, styles.deleteActionBtn]}
-                        onPress={() => deletePost(item.id)}
-                      >
-                        <Ionicons
-                          name="trash-outline"
-                          size={16}
-                          color="#ef4444"
-                        />
-                      </TouchableOpacity>
-                    </View>
-                  )}
-                </View>
-              );
-            })}
-          </View>
+                        <TouchableOpacity
+                          style={[styles.actionBtn, styles.deleteActionBtn]}
+                          onPress={() => deletePost(item.id)}
+                        >
+                          <Ionicons
+                            name="trash-outline"
+                            size={16}
+                            color="#ef4444"
+                          />
+                        </TouchableOpacity>
+                      </View>
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+
+            {/* ✅ ปุ่มดูเพิ่มเติม / ย่อรายการ */}
+            {hasMorePosts && (
+              <TouchableOpacity
+                style={styles.moreBtn}
+                onPress={() => setShowAllPosts((p) => !p)}
+              >
+                <Text style={styles.moreBtnText}>
+                  {showAllPosts
+                    ? "ย่อรายการ"
+                    : `ดูเพิ่มเติม (${posts.length - VISIBLE_COUNT})`}
+                </Text>
+                <Ionicons
+                  name={showAllPosts ? "chevron-up" : "chevron-down"}
+                  size={18}
+                  color={Colors.PURPLE}
+                />
+              </TouchableOpacity>
+            )}
+          </>
         ) : (
           <View style={styles.emptyContainer}>
             <View style={styles.emptyIconCircle}>
@@ -651,7 +689,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
   },
 
-  // ✅ Verification
+  // Verification
   verifyCard: {
     marginTop: 14,
     width: "100%",
@@ -911,6 +949,26 @@ const styles = StyleSheet.create({
   },
   deleteActionBtn: {
     backgroundColor: "#fef2f2",
+  },
+
+  // ✅ More button
+  moreBtn: {
+    marginTop: 14,
+    backgroundColor: "#fff",
+    borderRadius: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderColor: "#ede9fe",
+  },
+  moreBtnText: {
+    color: Colors.PURPLE,
+    fontWeight: "900",
+    fontSize: 14,
   },
 
   // Empty State

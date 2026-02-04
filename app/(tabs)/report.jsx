@@ -113,6 +113,17 @@ const uploadImageWithRetry = async (
   throw lastError;
 };
 
+// ✅ NEW: Thai date-time formatter (Bangkok)
+const formatThaiDateTime = (d) =>
+  new Intl.DateTimeFormat("th-TH", {
+    timeZone: "Asia/Bangkok",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(d);
+
 export default function Report() {
   const { user, isLoaded } = useUser();
   const { getToken } = useAuth();
@@ -129,6 +140,11 @@ export default function Report() {
   const [loading, setLoading] = useState(false);
   const [locating, setLocating] = useState(true);
   const [uploadProgress, setUploadProgress] = useState(null);
+
+  // ✅ NEW: reported date/time (auto)
+  // - shows on screen
+  // - set again at submit time to reflect actual submit moment
+  const [reportedAt, setReportedAt] = useState(() => new Date());
 
   const gpsReady = !!location && !locating;
 
@@ -332,6 +348,10 @@ export default function Report() {
       setLoading(true);
       setUploadProgress("กำลังเตรียมข้อมูล...");
 
+      // ✅ NEW: lock submit time at the moment user sends
+      const now = new Date();
+      setReportedAt(now);
+
       const token = await getToken({ template: "supabase", skipCache: true });
       const supabase = createClerkSupabaseClient(token);
 
@@ -370,6 +390,14 @@ export default function Report() {
         latitude: location.latitude,
         longitude: location.longitude,
         status: "pending",
+
+        // ✅ OPTION A (RECOMMENDED):
+        // If your DB column has DEFAULT now() (created_at or reported_at),
+        // you can REMOVE the line below and let DB set it.
+        //
+        // ✅ OPTION B:
+        // Save submit time from client:
+        reported_at: now.toISOString(),
       });
 
       if (reportError) throw reportError;
@@ -385,10 +413,14 @@ export default function Report() {
       if (volError) console.error("❌ Error fetching volunteers:", volError);
 
       if (volunteers?.length > 0) {
+        const tsText = formatThaiDateTime(now);
+
         const notifications = volunteers.map((v) => ({
           user_id: v.id,
           title: "มีเคสใหม่ 🐾",
-          description: `พบ${animalType}: ${detail.trim() || "ต้องการความช่วยเหลือ"}`,
+          description: `เวลาแจ้ง: ${tsText}\nพบ${animalType}: ${
+            detail.trim() || "ต้องการความช่วยเหลือ"
+          }`,
           type: "urgent",
           unread: true,
         }));
@@ -408,6 +440,8 @@ export default function Report() {
       setDetail("");
       setContactPhone("");
       setImages([]);
+      // ✅ keep reportedAt as last submit time; if you want reset to "now", uncomment:
+      // setReportedAt(new Date());
     } catch (err) {
       console.error("❌ Submit error raw:", err);
       console.error("❌ Submit error json:", JSON.stringify(err, null, 2));
@@ -452,6 +486,17 @@ export default function Report() {
         <Text style={styles.headerSubtitle}>
           ระบุรายละเอียดเพื่อให้ความช่วยเหลือรวดเร็วขึ้น
         </Text>
+
+        {/* ✅ NEW: Reported Date/Time Card */}
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>วันที่/เวลา ที่แจ้ง</Text>
+          <Text style={styles.datetimeText}>
+            {formatThaiDateTime(reportedAt)}
+          </Text>
+          <Text style={styles.datetimeHint}>
+            ระบบใส่ให้อัตโนมัติ (อิงเวลาเครื่อง/ตอนกดส่ง)
+          </Text>
+        </View>
 
         {/* Images Card */}
         <View style={styles.card}>
@@ -702,6 +747,19 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     color: "#111827",
     marginBottom: 10,
+  },
+
+  // ✅ NEW: date/time styles
+  datetimeText: {
+    color: "#0f172a",
+    fontWeight: "900",
+    fontSize: 16,
+  },
+  datetimeHint: {
+    marginTop: 6,
+    color: "#94a3b8",
+    fontSize: 12,
+    fontWeight: "700",
   },
 
   imagesHeaderRow: {

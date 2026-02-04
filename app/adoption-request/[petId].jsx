@@ -120,7 +120,9 @@ export default function AdoptionRequestForm() {
   const [loading, setLoading] = useState(true);
 
   const [submitting, setSubmitting] = useState(false);
-  const [alreadySent, setAlreadySent] = useState(false);
+
+  // ✅ เปลี่ยน: เก็บ status ด้วย (pending/approved/cancelled/rejected/...)
+  const [myReqStatus, setMyReqStatus] = useState(null);
 
   // form
   const [fullName, setFullName] = useState("");
@@ -134,6 +136,12 @@ export default function AdoptionRequestForm() {
   const [notes, setNotes] = useState("");
 
   const isAdopted = useMemo(() => pet?.adoption_status === "adopted", [pet]);
+
+  // ✅ active = ยังกันส่งซ้ำ
+  const hasActiveRequest = useMemo(
+    () => ["pending", "approved"].includes(myReqStatus),
+    [myReqStatus],
+  );
 
   useEffect(() => {
     (async () => {
@@ -155,23 +163,30 @@ export default function AdoptionRequestForm() {
     })();
   }, [petId]);
 
+  // ✅ แก้ตรงนี้: เช็คเฉพาะ pending/approved เท่านั้น
   useEffect(() => {
     if (!user || !pet) return;
+
     (async () => {
       try {
         const token = await getToken({ template: "supabase", skipCache: true });
         const supabaseAuth = createClerkSupabaseClient(token);
 
-        const { data } = await supabaseAuth
+        const { data, error } = await supabaseAuth
           .from("adoption_requests")
-          .select("id")
+          .select("id,status,created_at")
           .eq("pet_id", pet.id)
           .eq("requester_id", user.id)
+          .in("status", ["pending", "approved"]) // ✅ สำคัญ
+          .order("created_at", { ascending: false })
+          .limit(1)
           .maybeSingle();
 
-        setAlreadySent(!!data);
+        if (error) throw error;
+
+        setMyReqStatus(data?.status ?? null); // pending/approved/null
       } catch {
-        // ignore
+        setMyReqStatus(null);
       }
     })();
   }, [user, pet]);
@@ -193,7 +208,7 @@ export default function AdoptionRequestForm() {
       Alert.alert("น้องถูกรับเลี้ยงไปแล้ว 😢");
       return;
     }
-    if (alreadySent) {
+    if (hasActiveRequest) {
       Alert.alert("คุณส่งคำขอไปแล้ว", "กรุณารอเจ้าของตอบกลับ");
       return;
     }
@@ -209,6 +224,7 @@ export default function AdoptionRequestForm() {
       const token = await getToken({ template: "supabase", skipCache: true });
       const supabaseAuth = createClerkSupabaseClient(token);
 
+      // ✅ เช็คสถานะล่าสุดของ pet + owner_id
       const { data: currentPet, error: petErr } = await supabaseAuth
         .from("pets")
         .select("adoption_status, user_id")
@@ -221,12 +237,31 @@ export default function AdoptionRequestForm() {
         return;
       }
 
+      // ✅ กันซ้ำอีกชั้นจาก DB เผื่อ state ยังไม่อัปเดต
+      const { data: active, error: activeErr } = await supabaseAuth
+        .from("adoption_requests")
+        .select("id,status,created_at")
+        .eq("pet_id", pet.id)
+        .eq("requester_id", user.id)
+        .in("status", ["pending", "approved"])
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (activeErr) throw activeErr;
+
+      if (active) {
+        setMyReqStatus(active.status);
+        Alert.alert("คุณส่งคำขอไปแล้ว", "กรุณารอเจ้าของตอบกลับ");
+        return;
+      }
+
       const payload = {
         fullName,
         phone,
-        homeType, // now stores value like: house/condo/etc
-        family, // now stores value like: alone/couple/etc
-        hasPets, // now stores value: yes/no
+        homeType,
+        family,
+        hasPets,
         experience,
         reason,
         readyCosts,
@@ -236,6 +271,7 @@ export default function AdoptionRequestForm() {
       const { error } = await supabaseAuth.from("adoption_requests").insert({
         pet_id: pet.id,
         requester_id: user.id,
+        owner_id: currentPet.user_id, // ✅ แนะนำให้ใส่ (owner policies ใช้)
         status: "pending",
         application_answers: payload,
       });
@@ -266,7 +302,7 @@ export default function AdoptionRequestForm() {
     );
   }
 
-  const disableSubmit = submitting || isAdopted || alreadySent;
+  const disableSubmit = submitting || isAdopted || hasActiveRequest;
 
   return (
     <View style={styles.container}>
@@ -300,14 +336,14 @@ export default function AdoptionRequestForm() {
               >
                 {isAdopted ? (
                   <Pill icon="paw" text="ถูกรับเลี้ยงแล้ว" tone="danger" />
-                ) : alreadySent ? (
+                ) : hasActiveRequest ? (
                   <Pill
                     icon="checkmark-circle"
                     text="คุณส่งคำขอแล้ว"
                     tone="ok"
                   />
                 ) : (
-                  <Pill icon="time" text="รอการตอบกลับจากเจ้าของ" tone="warn" />
+                  <Pill icon="time" text="ยังไม่ส่งคำขอ" tone="info" />
                 )}
               </View>
             </View>
@@ -422,7 +458,6 @@ export default function AdoptionRequestForm() {
             />
           </View>
 
-          {/* space for sticky bottom */}
           <View style={{ height: 110 }} />
         </ScrollView>
 
@@ -430,7 +465,7 @@ export default function AdoptionRequestForm() {
         <View style={styles.bottomBar}>
           <View style={{ flex: 1 }}>
             <Text style={styles.bottomTitle}>
-              {alreadySent
+              {hasActiveRequest
                 ? "ส่งคำขอแล้ว"
                 : isAdopted
                   ? "ถูกรับเลี้ยงแล้ว"
@@ -438,7 +473,7 @@ export default function AdoptionRequestForm() {
             </Text>
             <Text style={styles.bottomSub}>
               {disableSubmit
-                ? alreadySent
+                ? hasActiveRequest
                   ? "คุณส่งคำขอนี้ไปแล้ว"
                   : isAdopted
                     ? "น้องถูกรับเลี้ยงไปแล้ว"
@@ -490,7 +525,6 @@ function Pill({ icon, text, tone }) {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#F9FAFB", paddingTop: 40 },
   page: { padding: 16, paddingBottom: 18 },
-
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
 
   headerCard: {
@@ -588,7 +622,6 @@ const styles = StyleSheet.create({
   },
   textarea: { minHeight: 96, textAlignVertical: "top" },
 
-  // NEW: dropdown styles
   selectWrap: {
     borderWidth: 1,
     borderColor: "#E5E7EB",
