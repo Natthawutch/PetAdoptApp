@@ -1,5 +1,6 @@
 import { useAuth, useUser } from "@clerk/clerk-expo";
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -7,6 +8,7 @@ import {
   FlatList,
   Image,
   Modal,
+  Platform,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -17,16 +19,15 @@ import {
 } from "react-native";
 import { createClerkSupabaseClient } from "../../config/supabaseClient";
 
-// ✅ ใส่อีเมลแอดมินของคุณ (ถ้าไม่ใส่ = ทุกคนเข้าได้)  ⚠️ production แนะนำอย่าปล่อยว่าง
+// ✅ ใส่อีเมลแอดมินของคุณ (ถ้าไม่ใส่ = ทุกคนเข้าได้)
 const ADMIN_EMAILS = [
   // "your_email@gmail.com",
 ];
 
 const STATUS_OPTIONS = ["open", "reviewing", "resolved", "dismissed"];
 
-// ✅ แก้ไข: ใช้ค่าที่ตรงกับฐานข้อมูล
-const POST_STATUS_ACTIVE = "active"; // โพสต์ปกติ
-const POST_STATUS_HIDDEN = "hidden"; // โพสต์ที่ซ่อน
+const POST_STATUS_ACTIVE = "active";
+const POST_STATUS_HIDDEN = "hidden";
 
 const formatThaiDateTime = (iso) => {
   try {
@@ -39,20 +40,31 @@ const formatThaiDateTime = (iso) => {
   }
 };
 
-// ✅ UI helper components
-const Section = ({ title, children }) => (
-  <View style={styles.section}>
-    <Text style={styles.sectionTitle}>{title}</Text>
-    <View style={{ gap: 8 }}>{children}</View>
-  </View>
+// ✅ UI Components
+const GlassCard = ({ children, style }) => (
+  <View style={[styles.glassCard, style]}>{children}</View>
 );
 
-const Row = ({ label, value, mono }) => (
-  <View style={styles.row}>
-    <Text style={styles.rowLabel}>{label}</Text>
-    <Text style={[styles.rowValue, mono && styles.mono]} numberOfLines={2}>
-      {value || "-"}
-    </Text>
+const InfoRow = ({
+  icon,
+  label,
+  value,
+  iconColor = "#8b5cf6",
+  mono = false,
+}) => (
+  <View style={styles.infoRow}>
+    <View style={[styles.infoIcon, { backgroundColor: `${iconColor}15` }]}>
+      <Ionicons name={icon} size={18} color={iconColor} />
+    </View>
+    <View style={styles.infoContent}>
+      <Text style={styles.infoLabel}>{label}</Text>
+      <Text
+        style={[styles.infoValue, mono && styles.monoText]}
+        numberOfLines={3}
+      >
+        {value || "-"}
+      </Text>
+    </View>
   </View>
 );
 
@@ -81,8 +93,6 @@ export default function AdminUserReports() {
   const [editingStatus, setEditingStatus] = useState("open");
   const [editingNote, setEditingNote] = useState("");
   const [saving, setSaving] = useState(false);
-
-  // ✅ เพิ่มเหตุผลสำหรับ dismiss (รายงานไม่จริง)
   const [dismissReason, setDismissReason] = useState("");
 
   const getSupabase = async () => {
@@ -117,7 +127,6 @@ export default function AdminUserReports() {
         throw error;
       }
 
-      // ✅ ดึงชื่อ users แยก (เพราะบางที FK users ไม่ตรงกับ clerk_id)
       const clerkIds = new Set();
       (rawReports || []).forEach((r) => {
         if (r.reporter_clerk_id) clerkIds.add(r.reporter_clerk_id);
@@ -144,7 +153,7 @@ export default function AdminUserReports() {
       console.error("fetchReports error:", e);
       Alert.alert(
         "ดึงข้อมูลไม่ได้",
-        "ตรวจสอบ RLS policy ของ user_reports (SELECT) และ pets (SELECT)",
+        "ตรวจสอบ RLS policy ของ user_reports และ pets",
       );
     } finally {
       setLoading(false);
@@ -168,23 +177,15 @@ export default function AdminUserReports() {
     setShowModal(true);
   };
 
-  const saveUpdate = async () => {
+  const updateStatus = async (newStatus) => {
     if (!selected?.id) return;
-
-    if (!STATUS_OPTIONS.includes(editingStatus)) {
-      Alert.alert(
-        "สถานะไม่ถูกต้อง",
-        "ต้องเป็น open/reviewing/resolved/dismissed",
-      );
-      return;
-    }
 
     try {
       setSaving(true);
       const supabase = await getSupabase();
 
       const payload = {
-        status: editingStatus,
+        status: newStatus,
         admin_note: editingNote?.trim() ? editingNote.trim() : null,
       };
 
@@ -199,12 +200,11 @@ export default function AdminUserReports() {
         prev.map((r) => (r.id === selected.id ? { ...r, ...payload } : r)),
       );
 
-      Alert.alert("บันทึกแล้ว", "อัปเดตสถานะเรียบร้อย ✅");
-      setShowModal(false);
-      setSelected(null);
+      Alert.alert("สำเร็จ", "อัปเดตสถานะเรียบร้อย ✅");
+      setEditingStatus(newStatus);
     } catch (e) {
-      console.error("saveUpdate error:", e);
-      Alert.alert("บันทึกไม่ได้", e?.message || "เกิดข้อผิดพลาด");
+      console.error("updateStatus error:", e);
+      Alert.alert("ทำไม่สำเร็จ", e?.message || "เกิดข้อผิดพลาด");
     } finally {
       setSaving(false);
     }
@@ -289,13 +289,10 @@ export default function AdminUserReports() {
               .select("id, post_status")
               .single();
 
-            console.log("HIDE result:", updatedPet, hideError);
-
             if (hideError) {
               Alert.alert(
                 "ซ่อนไม่ได้",
-                hideError.message ||
-                  "RLS policy บล็อคอยู่ (เช็ค is_admin() / clerk_user_id())",
+                hideError.message || "RLS policy บล็อคอยู่",
               );
               return;
             }
@@ -304,6 +301,7 @@ export default function AdminUserReports() {
               (editingNote || "").trim(),
               "[Action] hidden pet post",
               `pet_id=${selected.pet_id}`,
+              `timestamp: ${new Date().toISOString()}`,
             ]
               .filter(Boolean)
               .join("\n");
@@ -352,8 +350,6 @@ export default function AdminUserReports() {
               .select("id, post_status")
               .single();
 
-            console.log("RESTORE result:", updatedPet, error);
-
             if (error) {
               Alert.alert("คืนไม่ได้", error.message || "RLS policy บล็อคอยู่");
               return;
@@ -363,6 +359,7 @@ export default function AdminUserReports() {
               (editingNote || "").trim(),
               "[Action] restored pet post",
               `pet_id=${selected.pet_id}`,
+              `timestamp: ${new Date().toISOString()}`,
             ]
               .filter(Boolean)
               .join("\n");
@@ -387,75 +384,85 @@ export default function AdminUserReports() {
     ]);
   };
 
-  /**
-   * ✅ สำคัญ: ตอนนี้ "ลบจริง" จะพัง เพราะ FK user_reports_pet_id_fkey + pet_id NOT NULL
-   * ดังนั้น เพื่อส่งงานทัน -> ปุ่มลบให้ทำงานเป็น "ซ่อนโพสต์" แทนก่อน
-   */
-  const deletePetPost = async () => {
-    await hidePetPost();
-  };
-
   const onRefresh = () => {
     setRefreshing(true);
     fetchReports();
   };
 
-  const statusBadge = (st) => {
+  const getStatusConfig = (st) => {
     switch (st) {
       case "open":
-        return { bg: "#FEF3C7", fg: "#92400E" };
+        return {
+          gradient: ["#fef3c7", "#fde68a"],
+          color: "#d97706",
+          icon: "alert-circle",
+          label: "เปิดอยู่",
+        };
       case "reviewing":
-        return { bg: "#DBEAFE", fg: "#1D4ED8" };
+        return {
+          gradient: ["#dbeafe", "#bfdbfe"],
+          color: "#2563eb",
+          icon: "eye",
+          label: "กำลังตรวจสอบ",
+        };
       case "resolved":
-        return { bg: "#DCFCE7", fg: "#166534" };
+        return {
+          gradient: ["#dcfce7", "#bbf7d0"],
+          color: "#16a34a",
+          icon: "checkmark-circle",
+          label: "แก้ไขแล้ว",
+        };
       case "dismissed":
-        return { bg: "#F3F4F6", fg: "#374151" };
+        return {
+          gradient: ["#f3f4f6", "#e5e7eb"],
+          color: "#6b7280",
+          icon: "close-circle",
+          label: "ยกเลิก",
+        };
       default:
-        return { bg: "#F3F4F6", fg: "#374151" };
+        return {
+          gradient: ["#f3f4f6", "#e5e7eb"],
+          color: "#6b7280",
+          icon: "help-circle",
+          label: "ไม่ทราบ",
+        };
     }
   };
 
-  const postStatusBadge = (st) => {
+  const getPostStatusConfig = (st) => {
     const s = (st || "").toLowerCase();
-    if (s === POST_STATUS_HIDDEN) return { bg: "#FEE2E2", fg: "#991B1B" };
-    if (s === POST_STATUS_ACTIVE) return { bg: "#DCFCE7", fg: "#166534" };
-    return { bg: "#E5E7EB", fg: "#374151" };
-  };
-
-  const renderPetImage = (imageUrl, height = 160) => {
-    if (!imageUrl) {
-      return (
-        <View
-          style={[
-            styles.petImagePlaceholder,
-            { height, justifyContent: "center", alignItems: "center" },
-          ]}
-        >
-          <Ionicons name="image-outline" size={30} color="#94A3B8" />
-          <Text style={{ marginTop: 6, color: "#64748b", fontWeight: "700" }}>
-            ไม่มีรูปโพสต์
-          </Text>
-        </View>
-      );
-    }
-
-    return (
-      <Image
-        source={{ uri: imageUrl }}
-        style={[styles.petImage, { height }]}
-        resizeMode="cover"
-      />
-    );
+    if (s === POST_STATUS_HIDDEN)
+      return {
+        gradient: ["#fee2e2", "#fecaca"],
+        color: "#dc2626",
+        label: "ซ่อนแล้ว",
+      };
+    if (s === POST_STATUS_ACTIVE)
+      return {
+        gradient: ["#dcfce7", "#bbf7d0"],
+        color: "#16a34a",
+        label: "แสดงอยู่",
+      };
+    return {
+      gradient: ["#e5e7eb", "#d1d5db"],
+      color: "#6b7280",
+      label: "ไม่ทราบ",
+    };
   };
 
   // ====== States ======
   if (!isLoaded) {
     return (
       <SafeAreaView style={styles.screen}>
-        <View style={styles.center}>
-          <ActivityIndicator />
-          <Text style={{ marginTop: 8, color: "#6B7280" }}>Loading…</Text>
-        </View>
+        <LinearGradient
+          colors={["#8b5cf6", "#6366f1"]}
+          style={styles.loadingContainer}
+        >
+          <View style={styles.loadingCard}>
+            <ActivityIndicator size="large" color="#8b5cf6" />
+            <Text style={styles.loadingText}>กำลังโหลด...</Text>
+          </View>
+        </LinearGradient>
       </SafeAreaView>
     );
   }
@@ -464,7 +471,8 @@ export default function AdminUserReports() {
     return (
       <SafeAreaView style={styles.screen}>
         <View style={styles.center}>
-          <Text style={{ fontWeight: "900" }}>กรุณาเข้าสู่ระบบ</Text>
+          <Ionicons name="log-in-outline" size={64} color="#8b5cf6" />
+          <Text style={styles.centerTitle}>กรุณาเข้าสู่ระบบ</Text>
         </View>
       </SafeAreaView>
     );
@@ -473,40 +481,54 @@ export default function AdminUserReports() {
   if (!isAdmin) {
     return (
       <SafeAreaView style={styles.screen}>
-        <View style={styles.center}>
-          <Ionicons name="lock-closed" size={44} color="#9CA3AF" />
-          <Text style={{ fontSize: 18, fontWeight: "900", color: "#111827" }}>
-            ไม่ใช่แอดมิน
-          </Text>
-          <Text style={{ color: "#6B7280", fontWeight: "700" }}>
-            หน้านี้สำหรับผู้ดูแลระบบเท่านั้น
-          </Text>
-        </View>
+        <LinearGradient
+          colors={["#ef4444", "#dc2626"]}
+          style={styles.errorContainer}
+        >
+          <View style={styles.errorCard}>
+            <View style={styles.errorIconContainer}>
+              <Ionicons name="lock-closed" size={48} color="#ef4444" />
+            </View>
+            <Text style={styles.errorTitle}>ไม่ใช่แอดมิน</Text>
+            <Text style={styles.errorText}>
+              หน้านี้สำหรับผู้ดูแลระบบเท่านั้น
+            </Text>
+          </View>
+        </LinearGradient>
       </SafeAreaView>
     );
   }
 
-  // ====== UI ======
+  // ====== Main UI ======
   return (
     <SafeAreaView style={styles.screen}>
-      <View style={styles.header}>
+      {/* Header */}
+      <LinearGradient
+        colors={["#8b5cf6", "#7c3aed"]}
+        style={styles.header}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 1, y: 1 }}
+      >
         <View>
-          <Text style={styles.title}>🚨 User Reports</Text>
-          <Text style={{ fontSize: 12, color: "#6B7280", fontWeight: "800" }}>
-            จัดการรายงานจากผู้ใช้
+          <Text style={styles.headerTitle}>🚨 User Reports</Text>
+          <Text style={styles.headerSubtitle}>
+            จัดการรายงานจากผู้ใช้ • ทั้งหมด {reports.length} รายการ
           </Text>
         </View>
 
-        <TouchableOpacity style={styles.refreshBtn} onPress={fetchReports}>
-          <Ionicons name="refresh" size={18} color="#111827" />
-          <Text style={styles.refreshText}>รีเฟรช</Text>
+        <TouchableOpacity
+          style={styles.refreshBtn}
+          onPress={fetchReports}
+          activeOpacity={0.8}
+        >
+          <Ionicons name="refresh" size={20} color="#8b5cf6" />
         </TouchableOpacity>
-      </View>
+      </LinearGradient>
 
       {loading ? (
         <View style={styles.center}>
-          <ActivityIndicator />
-          <Text style={{ marginTop: 8, color: "#6B7280" }}>กำลังโหลด…</Text>
+          <ActivityIndicator size="large" color="#8b5cf6" />
+          <Text style={styles.loadingText}>กำลังโหลดรายงาน...</Text>
         </View>
       ) : (
         <FlatList
@@ -514,96 +536,130 @@ export default function AdminUserReports() {
           keyExtractor={(item) => item.id}
           onRefresh={onRefresh}
           refreshing={refreshing}
-          contentContainerStyle={{ padding: 16, paddingBottom: 40 }}
+          contentContainerStyle={styles.listContent}
           ListEmptyComponent={
-            <View style={styles.center}>
-              <Ionicons
-                name="document-text-outline"
-                size={50}
-                color="#D1D5DB"
-              />
-              <Text
-                style={{ marginTop: 10, color: "#6B7280", fontWeight: "800" }}
-              >
-                ไม่มีรายงาน
-              </Text>
+            <View style={styles.emptyContainer}>
+              <View style={styles.emptyIcon}>
+                <Ionicons
+                  name="document-text-outline"
+                  size={64}
+                  color="#cbd5e1"
+                />
+              </View>
+              <Text style={styles.emptyTitle}>ไม่มีรายงาน</Text>
+              <Text style={styles.emptyText}>ยังไม่มีรายงานจากผู้ใช้</Text>
             </View>
           }
           renderItem={({ item }) => {
-            const b = statusBadge(item.status);
+            const statusConfig = getStatusConfig(item.status);
+            const postConfig = getPostStatusConfig(item.pets?.post_status);
             const pet = item.pets;
-            const pb = postStatusBadge(pet?.post_status);
-
-            const petTitle = pet?.name
-              ? `🐾 ${pet.name} • ${pet?.breed || "ทั่วไป"}`
-              : item.pet_id
-                ? `🐾 Pet ID: ${item.pet_id.slice(0, 8)}...`
-                : "🐾 ไม่มี pet_id";
 
             return (
               <TouchableOpacity
-                style={styles.card}
+                style={styles.reportCard}
                 onPress={() => openDetail(item)}
-                activeOpacity={0.92}
+                activeOpacity={0.95}
               >
-                {renderPetImage(pet?.image_url, 155)}
+                {/* Pet Image */}
+                {pet?.image_url ? (
+                  <View style={styles.imageContainer}>
+                    <Image
+                      source={{ uri: pet.image_url }}
+                      style={styles.petImage}
+                      resizeMode="cover"
+                    />
+                    <LinearGradient
+                      colors={["transparent", "rgba(0,0,0,0.6)"]}
+                      style={styles.imageGradient}
+                    />
+                  </View>
+                ) : (
+                  <View style={styles.imagePlaceholder}>
+                    <Ionicons name="image-outline" size={40} color="#cbd5e1" />
+                  </View>
+                )}
 
-                <View style={{ marginTop: 12, gap: 10 }}>
-                  <View style={styles.cardTop}>
-                    <View
-                      style={{
-                        flexDirection: "row",
-                        gap: 8,
-                        flexWrap: "wrap",
-                      }}
+                {/* Card Content */}
+                <View style={styles.cardContent}>
+                  {/* Status Badges */}
+                  <View style={styles.badgeRow}>
+                    <LinearGradient
+                      colors={statusConfig.gradient}
+                      style={styles.statusBadge}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
                     >
-                      <View style={[styles.badge, { backgroundColor: b.bg }]}>
-                        <Text style={[styles.badgeText, { color: b.fg }]}>
-                          {item.status}
-                        </Text>
-                      </View>
+                      <Ionicons
+                        name={statusConfig.icon}
+                        size={14}
+                        color={statusConfig.color}
+                      />
+                      <Text
+                        style={[
+                          styles.badgeText,
+                          { color: statusConfig.color },
+                        ]}
+                      >
+                        {statusConfig.label}
+                      </Text>
+                    </LinearGradient>
 
-                      <View style={[styles.badge, { backgroundColor: pb.bg }]}>
-                        <Text style={[styles.badgeText, { color: pb.fg }]}>
-                          post: {pet?.post_status || "-"}
-                        </Text>
-                      </View>
-
-                      {!!item.reason && (
-                        <View
-                          style={[styles.badge, { backgroundColor: "#F1F5F9" }]}
-                        >
-                          <Text
-                            style={[styles.badgeText, { color: "#0F172A" }]}
-                          >
-                            {item.reason}
-                          </Text>
-                        </View>
-                      )}
-                    </View>
-
-                    <Text style={styles.dateText}>
-                      {formatThaiDateTime(item.created_at)}
-                    </Text>
+                    <LinearGradient
+                      colors={postConfig.gradient}
+                      style={styles.statusBadge}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 1, y: 0 }}
+                    >
+                      <Text
+                        style={[styles.badgeText, { color: postConfig.color }]}
+                      >
+                        {postConfig.label}
+                      </Text>
+                    </LinearGradient>
                   </View>
 
-                  <Text style={styles.petTitle} numberOfLines={1}>
-                    {petTitle}
+                  {/* Pet Info */}
+                  <Text style={styles.petName} numberOfLines={1}>
+                    🐾 {pet?.name || "ไม่มีข้อมูลโพสต์"}
+                    {pet?.breed && ` • ${pet.breed}`}
                   </Text>
 
-                  <Text style={styles.detailText} numberOfLines={2}>
-                    {item.details || "-"}
+                  {/* Reason */}
+                  {item.reason && (
+                    <View style={styles.reasonTag}>
+                      <Ionicons name="flag" size={14} color="#ef4444" />
+                      <Text style={styles.reasonText}>{item.reason}</Text>
+                    </View>
+                  )}
+
+                  {/* Details */}
+                  <Text style={styles.detailsText} numberOfLines={2}>
+                    {item.details || "ไม่มีรายละเอียด"}
                   </Text>
 
-                  <View style={styles.userInline}>
-                    <Text style={styles.userInlineLabel}>ผู้รายงาน</Text>
-                    <Text style={styles.userInlineValue} numberOfLines={1}>
-                      {item?.reporter?.full_name || "ไม่พบชื่อ"}
-                    </Text>
-                    <Text style={styles.userInlineArrow}>→</Text>
-                    <Text style={styles.userInlineLabel}>ถูกรายงาน</Text>
-                    <Text style={styles.userInlineValue} numberOfLines={1}>
-                      {item?.reported?.full_name || "ไม่พบชื่อ"}
+                  {/* Users Info */}
+                  <View style={styles.usersRow}>
+                    <View style={styles.userTag}>
+                      <Text style={styles.userLabel}>ผู้รายงาน:</Text>
+                      <Text style={styles.userName} numberOfLines={1}>
+                        {item.reporter?.full_name || "ไม่พบชื่อ"}
+                      </Text>
+                    </View>
+                    <Ionicons name="arrow-forward" size={14} color="#94a3b8" />
+                    <View style={styles.userTag}>
+                      <Text style={styles.userLabel}>ถูกรายงาน:</Text>
+                      <Text style={styles.userName} numberOfLines={1}>
+                        {item.reported?.full_name || "ไม่พบชื่อ"}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* Date */}
+                  <View style={styles.dateRow}>
+                    <Ionicons name="time-outline" size={14} color="#94a3b8" />
+                    <Text style={styles.dateText}>
+                      {formatThaiDateTime(item.created_at)}
                     </Text>
                   </View>
                 </View>
@@ -613,134 +669,239 @@ export default function AdminUserReports() {
         />
       )}
 
-      {/* ===== Modal Detail (Improved UX) ===== */}
+      {/* ===== Modal Detail ===== */}
       <Modal visible={showModal} animationType="slide" transparent>
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <View style={{ gap: 2 }}>
+          <View style={styles.modalContainer}>
+            {/* Modal Header */}
+            <LinearGradient
+              colors={["#8b5cf6", "#7c3aed"]}
+              style={styles.modalHeader}
+            >
+              <View style={{ flex: 1 }}>
                 <Text style={styles.modalTitle}>รายละเอียดรายงาน</Text>
-                <Text style={styles.modalSub}>
-                  {selected?.created_at
-                    ? formatThaiDateTime(selected.created_at)
-                    : ""}
+                <Text style={styles.modalSubtitle}>
+                  {formatThaiDateTime(selected?.created_at)}
                 </Text>
               </View>
 
               <TouchableOpacity
                 onPress={() => (!saving ? setShowModal(false) : null)}
                 disabled={saving}
+                style={styles.closeButton}
               >
-                <Ionicons name="close" size={24} color="#111827" />
+                <Ionicons name="close" size={24} color="#fff" />
               </TouchableOpacity>
-            </View>
+            </LinearGradient>
 
             <ScrollView
-              style={{ padding: 16 }}
-              contentContainerStyle={{ gap: 14, paddingBottom: 120 }}
+              style={styles.modalScroll}
+              contentContainerStyle={styles.modalScrollContent}
               showsVerticalScrollIndicator={false}
             >
-              <Section title="โพสต์">
-                {renderPetImage(selected?.pets?.image_url, 220)}
+              {/* Pet Section */}
+              <GlassCard>
+                <View style={styles.sectionHeader}>
+                  <Ionicons name="paw" size={22} color="#8b5cf6" />
+                  <Text style={styles.sectionTitle}>ข้อมูลโพสต์</Text>
+                </View>
 
-                <Row
-                  label="Pet"
+                {selected?.pets?.image_url ? (
+                  <View style={styles.modalImageContainer}>
+                    <Image
+                      source={{ uri: selected.pets.image_url }}
+                      style={styles.modalPetImage}
+                      resizeMode="cover"
+                    />
+                  </View>
+                ) : (
+                  <View style={styles.modalImagePlaceholder}>
+                    <Ionicons name="image-outline" size={48} color="#cbd5e1" />
+                    <Text style={styles.placeholderText}>ไม่มีรูปภาพ</Text>
+                  </View>
+                )}
+
+                <InfoRow
+                  icon="information-circle"
+                  label="ชื่อสัตว์เลี้ยง"
                   value={
                     selected?.pets?.name
-                      ? `${selected.pets.name} • ${
-                          selected?.pets?.breed || "ทั่วไป"
-                        }`
-                      : selected?.pet_id
-                        ? `ไม่พบข้อมูลโพสต์ (pet_id: ${selected.pet_id})`
-                        : "ไม่มี pet_id"
+                      ? `${selected.pets.name} • ${selected.pets.breed || "ทั่วไป"}`
+                      : "ไม่พบข้อมูล"
                   }
+                  iconColor="#8b5cf6"
                 />
 
-                <View
-                  style={{
-                    flexDirection: "row",
-                    alignItems: "center",
-                    gap: 8,
-                  }}
-                >
-                  <Text style={styles.rowLabel}>Post status</Text>
-                  <View
-                    style={[
-                      styles.badge,
-                      {
-                        backgroundColor: postStatusBadge(
-                          selected?.pets?.post_status,
-                        ).bg,
-                      },
-                    ]}
+                <InfoRow
+                  icon="code-slash"
+                  label="Pet ID"
+                  value={selected?.pet_id || "-"}
+                  iconColor="#8b5cf6"
+                  mono
+                />
+
+                <View style={styles.divider} />
+
+                <View style={styles.postStatusRow}>
+                  <Text style={styles.postStatusLabel}>สถานะโพสต์:</Text>
+                  <LinearGradient
+                    colors={
+                      getPostStatusConfig(selected?.pets?.post_status).gradient
+                    }
+                    style={styles.postStatusBadge}
                   >
                     <Text
                       style={[
-                        styles.badgeText,
+                        styles.postStatusText,
                         {
-                          color: postStatusBadge(selected?.pets?.post_status)
-                            .fg,
+                          color: getPostStatusConfig(
+                            selected?.pets?.post_status,
+                          ).color,
                         },
                       ]}
                     >
-                      {selected?.pets?.post_status || "-"}
+                      {getPostStatusConfig(selected?.pets?.post_status).label}
+                    </Text>
+                  </LinearGradient>
+                </View>
+              </GlassCard>
+
+              {/* Users Section */}
+              <GlassCard>
+                <View style={styles.sectionHeader}>
+                  <Ionicons name="people" size={22} color="#3b82f6" />
+                  <Text style={styles.sectionTitle}>ผู้เกี่ยวข้อง</Text>
+                </View>
+
+                <InfoRow
+                  icon="person"
+                  label="ผู้รายงาน"
+                  value={selected?.reporter?.full_name || "ไม่พบชื่อ"}
+                  iconColor="#3b82f6"
+                />
+
+                <InfoRow
+                  icon="code-slash"
+                  label="Reporter Clerk ID"
+                  value={selected?.reporter_clerk_id || "-"}
+                  iconColor="#3b82f6"
+                  mono
+                />
+
+                <View style={styles.divider} />
+
+                <InfoRow
+                  icon="alert-circle"
+                  label="ถูกรายงาน"
+                  value={selected?.reported?.full_name || "ไม่พบชื่อ"}
+                  iconColor="#ef4444"
+                />
+
+                <InfoRow
+                  icon="code-slash"
+                  label="Reported Clerk ID"
+                  value={selected?.reported_clerk_id || "-"}
+                  iconColor="#ef4444"
+                  mono
+                />
+              </GlassCard>
+
+              {/* Report Details Section */}
+              <GlassCard>
+                <View style={styles.sectionHeader}>
+                  <Ionicons name="document-text" size={22} color="#f59e0b" />
+                  <Text style={styles.sectionTitle}>รายละเอียดรายงาน</Text>
+                </View>
+
+                <InfoRow
+                  icon="code-slash"
+                  label="Report ID"
+                  value={selected?.id || "-"}
+                  iconColor="#f59e0b"
+                  mono
+                />
+
+                <InfoRow
+                  icon="flag"
+                  label="เหตุผลการรายงาน"
+                  value={selected?.reason || "-"}
+                  iconColor="#f59e0b"
+                />
+
+                <View style={styles.divider} />
+
+                <View style={styles.detailsSection}>
+                  <Text style={styles.detailsLabel}>รายละเอียดเพิ่มเติม</Text>
+                  <View style={styles.detailsBox}>
+                    <Text style={styles.detailsValue}>
+                      {selected?.details || "ไม่มีรายละเอียด"}
                     </Text>
                   </View>
                 </View>
-              </Section>
 
-              <Section title="ผู้เกี่ยวข้อง">
-                <Row
-                  label="ผู้รายงาน"
-                  value={selected?.reporter?.full_name || "ไม่พบชื่อ"}
-                />
-                <Row
-                  label="reporter_clerk_id"
-                  value={selected?.reporter_clerk_id}
-                  mono
-                />
-                <View style={styles.divider} />
-                <Row
-                  label="ถูกรายงาน"
-                  value={selected?.reported?.full_name || "ไม่พบชื่อ"}
-                />
-                <Row
-                  label="reported_clerk_id"
-                  value={selected?.reported_clerk_id}
-                  mono
-                />
-              </Section>
+                {selected?.admin_note && (
+                  <>
+                    <View style={styles.divider} />
+                    <View style={styles.detailsSection}>
+                      <Text style={styles.detailsLabel}>บันทึกของแอดมิน</Text>
+                      <View
+                        style={[
+                          styles.detailsBox,
+                          { backgroundColor: "#fef3c7" },
+                        ]}
+                      >
+                        <Text style={styles.detailsValue}>
+                          {selected.admin_note}
+                        </Text>
+                      </View>
+                    </View>
+                  </>
+                )}
+              </GlassCard>
 
-              <Section title="รายละเอียดรายงาน">
-                <Row label="Report ID" value={selected?.id} mono />
-                <Row label="Reason" value={selected?.reason} />
+              {/* Status & Admin Section */}
+              <GlassCard>
+                <View style={styles.sectionHeader}>
+                  <Ionicons name="settings" size={22} color="#6366f1" />
+                  <Text style={styles.sectionTitle}>การจัดการ</Text>
+                </View>
 
-                <Text style={styles.rowLabel}>Details</Text>
-                <Text style={styles.longValue}>{selected?.details || "-"}</Text>
-
-                <Text style={styles.rowLabel}>Status</Text>
-                <View style={styles.statusRow}>
+                <Text style={styles.inputLabel}>สถานะการตรวจสอบ</Text>
+                <View style={styles.statusChipsContainer}>
                   {STATUS_OPTIONS.map((st) => {
                     const active = editingStatus === st;
+                    const config = getStatusConfig(st);
+
                     return (
                       <TouchableOpacity
                         key={st}
-                        style={[
-                          styles.statusChip,
-                          active && styles.statusChipActive,
-                          saving && { opacity: 0.7 },
-                        ]}
-                        onPress={() => setEditingStatus(st)}
+                        onPress={() => {
+                          setEditingStatus(st);
+                          updateStatus(st);
+                        }}
                         disabled={saving}
+                        activeOpacity={0.8}
                       >
-                        <Text
-                          style={[
-                            styles.statusChipText,
-                            active && styles.statusChipTextActive,
-                          ]}
+                        <LinearGradient
+                          colors={
+                            active ? config.gradient : ["#f3f4f6", "#f3f4f6"]
+                          }
+                          style={styles.statusChip}
                         >
-                          {st}
-                        </Text>
+                          <Ionicons
+                            name={config.icon}
+                            size={16}
+                            color={active ? config.color : "#9ca3af"}
+                          />
+                          <Text
+                            style={[
+                              styles.statusChipText,
+                              { color: active ? config.color : "#9ca3af" },
+                            ]}
+                          >
+                            {config.label}
+                          </Text>
+                        </LinearGradient>
                       </TouchableOpacity>
                     );
                   })}
@@ -748,90 +909,81 @@ export default function AdminUserReports() {
 
                 {editingStatus === "dismissed" && (
                   <>
-                    <Text style={styles.rowLabel}>เหตุผลที่ dismiss</Text>
+                    <Text style={[styles.inputLabel, { marginTop: 16 }]}>
+                      เหตุผลที่ dismiss
+                    </Text>
                     <TextInput
                       value={dismissReason}
                       onChangeText={setDismissReason}
-                      placeholder="เช่น ตรวจสอบแล้วไม่พบความผิด / หลักฐานไม่พอ / สแปมรายงาน"
+                      placeholder="ระบุเหตุผล เช่น ตรวจสอบแล้วไม่พบความผิด"
                       multiline
                       editable={!saving}
-                      style={styles.noteInput}
+                      style={styles.textInput}
                     />
 
                     <TouchableOpacity
-                      style={[styles.dangerBtn, saving && { opacity: 0.6 }]}
+                      style={[styles.dismissButton, saving && { opacity: 0.6 }]}
                       onPress={dismissAsFalseReport}
                       disabled={saving}
+                      activeOpacity={0.8}
                     >
-                      <Ionicons name="close-circle" size={16} color="#fff" />
-                      <Text style={styles.dangerBtnText}>ยืนยัน Dismiss</Text>
+                      <LinearGradient
+                        colors={["#ef4444", "#dc2626"]}
+                        style={styles.buttonGradient}
+                      >
+                        <Ionicons name="close-circle" size={18} color="#fff" />
+                        <Text style={styles.buttonText}>ยืนยัน Dismiss</Text>
+                      </LinearGradient>
                     </TouchableOpacity>
                   </>
                 )}
 
-                <Text style={styles.rowLabel}>Admin note</Text>
+                <Text style={[styles.inputLabel, { marginTop: 16 }]}>
+                  บันทึกของแอดมิน (ไม่บังคับ)
+                </Text>
                 <TextInput
                   value={editingNote}
                   onChangeText={setEditingNote}
-                  placeholder="บันทึกของแอดมิน..."
+                  placeholder="บันทึกเพิ่มเติม..."
                   multiline
                   editable={!saving}
-                  style={styles.noteInput}
+                  style={styles.textInput}
                 />
-              </Section>
+              </GlassCard>
 
-              <View style={{ height: 12 }} />
+              <View style={{ height: 120 }} />
             </ScrollView>
 
-            {/* ✅ Sticky Action Bar */}
+            {/* Action Bar - เหลือแค่ 2 ปุ่ม */}
             <View style={styles.actionBar}>
               <TouchableOpacity
-                style={[
-                  styles.actionBarBtn,
-                  { backgroundColor: "#111827" },
-                  saving && { opacity: 0.6 },
-                ]}
+                style={[styles.actionButtonFull, saving && { opacity: 0.6 }]}
                 onPress={hidePetPost}
                 disabled={saving}
+                activeOpacity={0.8}
               >
-                <Ionicons name="eye-off" size={16} color="#fff" />
-                <Text style={styles.actionBarText}>ซ่อนโพสต์</Text>
+                <LinearGradient
+                  colors={["#ef4444", "#dc2626"]}
+                  style={styles.actionButtonGradient}
+                >
+                  <Ionicons name="eye-off" size={20} color="#fff" />
+                  <Text style={styles.actionButtonTextFull}>ซ่อนโพสต์</Text>
+                </LinearGradient>
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={[
-                  styles.actionBarBtn,
-                  { backgroundColor: "#16A34A" },
-                  saving && { opacity: 0.6 },
-                ]}
+                style={[styles.actionButtonFull, saving && { opacity: 0.6 }]}
                 onPress={restorePetPost}
                 disabled={saving}
+                activeOpacity={0.8}
               >
-                <Ionicons name="refresh" size={16} color="#fff" />
-                <Text style={styles.actionBarText}>คืนโพสต์</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[
-                  styles.actionBarBtn,
-                  { backgroundColor: "#DC2626" },
-                  saving && { opacity: 0.6 },
-                ]}
-                onPress={deletePetPost}
-                disabled={saving}
-              >
-                <Ionicons name="trash" size={16} color="#fff" />
-                <Text style={styles.actionBarText}>ซ่อนแทนลบ</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.saveBtn, saving && { opacity: 0.6 }]}
-                onPress={saveUpdate}
-                disabled={saving}
-              >
-                <Text style={styles.saveText}>
-                  {saving ? "กำลังบันทึก..." : "บันทึก"}
-                </Text>
+                <LinearGradient
+                  colors={["#22c55e", "#16a34a"]}
+                  style={styles.actionButtonGradient}
+                >
+                  <Ionicons name="refresh" size={20} color="#fff" />
+                  <Text style={styles.actionButtonTextFull}>คืนโพสต์</Text>
+                </LinearGradient>
               </TouchableOpacity>
             </View>
           </View>
@@ -842,210 +994,539 @@ export default function AdminUserReports() {
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, backgroundColor: "#F8FAFC" },
-  center: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10 },
+  screen: { flex: 1, backgroundColor: "#f8fafc" },
 
+  /* Loading & Error States */
+  loadingContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  loadingCard: {
+    backgroundColor: "#fff",
+    padding: 40,
+    borderRadius: 24,
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 15,
+    fontWeight: "600",
+    color: "#64748b",
+  },
+
+  errorContainer: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 24,
+  },
+  errorCard: {
+    backgroundColor: "#fff",
+    padding: 32,
+    borderRadius: 24,
+    alignItems: "center",
+    width: "100%",
+    maxWidth: 400,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 16,
+    elevation: 8,
+  },
+  errorIconContainer: {
+    width: 100,
+    height: 100,
+    borderRadius: 50,
+    backgroundColor: "#fee2e2",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 20,
+  },
+  errorTitle: {
+    fontSize: 22,
+    fontWeight: "800",
+    color: "#1e293b",
+    marginBottom: 8,
+  },
+  errorText: {
+    fontSize: 14,
+    color: "#64748b",
+    textAlign: "center",
+  },
+
+  center: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 12,
+  },
+  centerTitle: {
+    fontSize: 18,
+    fontWeight: "700",
+    color: "#1e293b",
+  },
+
+  /* Header */
   header: {
-    paddingHorizontal: 16,
-    paddingTop: 40,
-    paddingBottom: 10,
+    paddingHorizontal: 20,
+    paddingTop: Platform.OS === "ios" ? 60 : 50,
+    paddingBottom: 20,
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
   },
-  title: { fontSize: 18, fontWeight: "900", color: "#111827" },
+  headerTitle: {
+    fontSize: 24,
+    fontWeight: "900",
+    color: "#fff",
+    marginBottom: 4,
+  },
+  headerSubtitle: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.9)",
+  },
   refreshBtn: {
-    flexDirection: "row",
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#fff",
+    justifyContent: "center",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-  },
-  refreshText: { fontWeight: "800", color: "#111827" },
-
-  card: {
-    backgroundColor: "#FFFFFF",
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    marginBottom: 12,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
   },
 
+  /* List */
+  listContent: {
+    padding: 16,
+    paddingBottom: 40,
+  },
+
+  emptyContainer: {
+    alignItems: "center",
+    paddingVertical: 80,
+  },
+  emptyIcon: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    backgroundColor: "#f1f5f9",
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 20,
+  },
+  emptyTitle: {
+    fontSize: 20,
+    fontWeight: "800",
+    color: "#1e293b",
+    marginBottom: 8,
+  },
+  emptyText: {
+    fontSize: 14,
+    color: "#64748b",
+  },
+
+  /* Report Card */
+  reportCard: {
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    marginBottom: 16,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+  },
+
+  imageContainer: {
+    height: 200,
+    position: "relative",
+  },
   petImage: {
     width: "100%",
-    borderRadius: 14,
-    backgroundColor: "#F1F5F9",
+    height: "100%",
+    backgroundColor: "#e5e7eb",
   },
-  petImagePlaceholder: {
-    width: "100%",
-    borderRadius: 14,
-    backgroundColor: "#F1F5F9",
+  imageGradient: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 80,
   },
 
-  cardTop: {
+  imagePlaceholder: {
+    height: 200,
+    backgroundColor: "#f1f5f9",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  cardContent: {
+    padding: 16,
+    gap: 12,
+  },
+
+  badgeRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "flex-start",
+    flexWrap: "wrap",
+    gap: 8,
   },
-  badge: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999 },
-  badgeText: { fontWeight: "900", fontSize: 12 },
-  dateText: { color: "#6B7280", fontWeight: "700", fontSize: 11 },
-
-  petTitle: {
-    marginTop: 2,
-    fontWeight: "900",
-    fontSize: 15,
-    color: "#0F172A",
+  statusBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+    gap: 4,
   },
-
-  detailText: {
-    color: "#374151",
-    fontWeight: "600",
-    lineHeight: 18,
+  badgeText: {
+    fontSize: 12,
+    fontWeight: "700",
   },
 
-  userInline: {
+  petName: {
+    fontSize: 17,
+    fontWeight: "800",
+    color: "#1e293b",
+  },
+
+  reasonTag: {
+    flexDirection: "row",
+    alignItems: "center",
+    alignSelf: "flex-start",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: "#fee2e2",
+    borderRadius: 12,
+    gap: 6,
+  },
+  reasonText: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#dc2626",
+  },
+
+  detailsText: {
+    fontSize: 14,
+    color: "#475569",
+    lineHeight: 20,
+  },
+
+  usersRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    padding: 12,
+    backgroundColor: "#f8fafc",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+  },
+  userTag: {
+    flex: 1,
+  },
+  userLabel: {
+    fontSize: 11,
+    fontWeight: "700",
+    color: "#94a3b8",
+    marginBottom: 2,
+  },
+  userName: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#1e293b",
+  },
+
+  dateRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: "#F9FAFB",
-    borderRadius: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    flexWrap: "wrap",
   },
-  userInlineLabel: { fontSize: 12, fontWeight: "900", color: "#6B7280" },
-  userInlineValue: {
-    maxWidth: 140,
+  dateText: {
     fontSize: 12,
-    fontWeight: "900",
-    color: "#111827",
+    color: "#94a3b8",
+    fontWeight: "600",
   },
-  userInlineArrow: { fontSize: 12, fontWeight: "900", color: "#94A3B8" },
 
+  /* Modal */
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.45)",
+    backgroundColor: "rgba(0,0,0,0.5)",
     justifyContent: "flex-end",
   },
-  modalContent: {
-    backgroundColor: "#FFFFFF",
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    maxHeight: "92%",
+  modalContainer: {
+    backgroundColor: "#f8fafc",
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: "95%",
     overflow: "hidden",
   },
   modalHeader: {
-    padding: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: "#E5E7EB",
     flexDirection: "row",
-    justifyContent: "space-between",
+    alignItems: "center",
+    paddingHorizontal: 20,
+    paddingVertical: 20,
+    gap: 12,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: "800",
+    color: "#fff",
+  },
+  modalSubtitle: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "rgba(255,255,255,0.9)",
+    marginTop: 2,
+  },
+  closeButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.2)",
+    justifyContent: "center",
     alignItems: "center",
   },
-  modalTitle: { fontSize: 16, fontWeight: "900", color: "#111827" },
-  modalSub: { fontSize: 12, fontWeight: "800", color: "#6B7280" },
 
-  section: {
-    backgroundColor: "#FFFFFF",
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    borderRadius: 16,
-    padding: 14,
+  modalScroll: {
+    flex: 1,
+  },
+  modalScrollContent: {
+    padding: 16,
+    gap: 16,
+  },
+
+  /* Glass Card */
+  glassCard: {
+    backgroundColor: "#fff",
+    borderRadius: 20,
+    padding: 18,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
     gap: 10,
+    marginBottom: 16,
   },
   sectionTitle: {
-    fontSize: 13,
-    fontWeight: "900",
-    color: "#0F172A",
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#1e293b",
   },
 
-  divider: { height: 1, backgroundColor: "#E5E7EB", marginVertical: 6 },
+  /* Modal Pet Image */
+  modalImageContainer: {
+    borderRadius: 16,
+    overflow: "hidden",
+    marginBottom: 16,
+  },
+  modalPetImage: {
+    width: "100%",
+    height: 240,
+    backgroundColor: "#e5e7eb",
+  },
+  modalImagePlaceholder: {
+    width: "100%",
+    height: 240,
+    backgroundColor: "#f1f5f9",
+    borderRadius: 16,
+    justifyContent: "center",
+    alignItems: "center",
+    marginBottom: 16,
+  },
+  placeholderText: {
+    marginTop: 8,
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#94a3b8",
+  },
 
-  row: { flexDirection: "row", gap: 10, alignItems: "flex-start" },
-  rowLabel: { width: 120, color: "#6B7280", fontWeight: "900", fontSize: 12 },
-  rowValue: { flex: 1, color: "#111827", fontWeight: "800", fontSize: 13 },
-
-  mono: {
-    fontFamily: "Courier",
-    color: "#111827",
-    fontWeight: "700",
+  /* Info Row */
+  infoRow: {
+    flexDirection: "row",
+    gap: 12,
+    marginBottom: 12,
+  },
+  infoIcon: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  infoContent: {
+    flex: 1,
+  },
+  infoLabel: {
     fontSize: 12,
-  },
-
-  longValue: { color: "#111827", fontWeight: "700", lineHeight: 19 },
-
-  statusRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 6 },
-  statusChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 999,
-    backgroundColor: "#F3F4F6",
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-  },
-  statusChipActive: { backgroundColor: "#111827", borderColor: "#111827" },
-  statusChipText: { fontWeight: "900", color: "#374151" },
-  statusChipTextActive: { color: "#FFFFFF" },
-
-  noteInput: {
-    minHeight: 90,
-    borderWidth: 1,
-    borderColor: "#E5E7EB",
-    backgroundColor: "#F9FAFB",
-    borderRadius: 14,
-    padding: 12,
     fontWeight: "700",
-    color: "#111827",
+    color: "#94a3b8",
+    marginBottom: 4,
+  },
+  infoValue: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#1e293b",
+    lineHeight: 20,
+  },
+  monoText: {
+    fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+    fontSize: 12,
+    color: "#475569",
+  },
+
+  divider: {
+    height: 1,
+    backgroundColor: "#e2e8f0",
+    marginVertical: 12,
+  },
+
+  postStatusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  postStatusLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#64748b",
+  },
+  postStatusBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 12,
+  },
+  postStatusText: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
+  /* Details Section */
+  detailsSection: {
+    gap: 8,
+  },
+  detailsLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#64748b",
+  },
+  detailsBox: {
+    padding: 14,
+    backgroundColor: "#f8fafc",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+  },
+  detailsValue: {
+    fontSize: 14,
+    color: "#334155",
+    lineHeight: 20,
+  },
+
+  /* Status Chips */
+  inputLabel: {
+    fontSize: 13,
+    fontWeight: "700",
+    color: "#64748b",
+    marginBottom: 10,
+  },
+  statusChipsContainer: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 10,
+  },
+  statusChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 14,
+    gap: 6,
+  },
+  statusChipText: {
+    fontSize: 13,
+    fontWeight: "700",
+  },
+
+  /* Text Input */
+  textInput: {
+    minHeight: 100,
+    borderWidth: 1,
+    borderColor: "#e2e8f0",
+    backgroundColor: "#f8fafc",
+    borderRadius: 14,
+    padding: 14,
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#1e293b",
     textAlignVertical: "top",
   },
 
-  dangerBtn: {
-    marginTop: 8,
-    paddingVertical: 12,
+  /* Buttons */
+  dismissButton: {
+    marginTop: 12,
     borderRadius: 14,
-    backgroundColor: "#DC2626",
-    alignItems: "center",
+    overflow: "hidden",
+  },
+  buttonGradient: {
     flexDirection: "row",
+    alignItems: "center",
     justifyContent: "center",
+    paddingVertical: 14,
     gap: 8,
   },
-  dangerBtnText: { fontWeight: "900", color: "#fff" },
+  buttonText: {
+    fontSize: 15,
+    fontWeight: "700",
+    color: "#fff",
+  },
 
+  /* Action Bar - ปรับให้มี 2 ปุ่มเต็มพื้นที่ */
   actionBar: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    padding: 12,
-    backgroundColor: "rgba(255,255,255,0.96)",
+    backgroundColor: "#fff",
     borderTopWidth: 1,
-    borderTopColor: "#E5E7EB",
+    borderTopColor: "#e2e8f0",
+    padding: 16,
+    paddingBottom: Platform.OS === "ios" ? 32 : 20,
+    gap: 12,
+  },
+  actionButtonFull: {
+    borderRadius: 14,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  actionButtonGradient: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 16,
     gap: 10,
   },
-  actionBarBtn: {
-    width: "100%",
-    paddingVertical: 12,
-    borderRadius: 14,
-    alignItems: "center",
-    flexDirection: "row",
-    justifyContent: "center",
-    gap: 8,
+  actionButtonTextFull: {
+    fontSize: 16,
+    fontWeight: "800",
+    color: "#fff",
   },
-  actionBarText: { fontWeight: "900", color: "#fff" },
-
-  saveBtn: {
-    padding: 14,
-    borderRadius: 14,
-    backgroundColor: "#111827",
-    alignItems: "center",
-  },
-  saveText: { fontWeight: "900", color: "#FFFFFF" },
 });

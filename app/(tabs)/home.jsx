@@ -497,7 +497,7 @@ export default function Home() {
       <FlatList
         ListHeaderComponent={
           <View style={styles.filterTitleArea}>
-            <Text style={styles.mainTitle}>สัตว์เลี้ยงใกล้คุณ</Text>
+            <Text style={styles.mainTitle}>สัตว์เลี้ยงใหม่</Text>
             <TouchableOpacity
               style={styles.filterTrigger}
               onPress={() => setShowFilterModal(true)}
